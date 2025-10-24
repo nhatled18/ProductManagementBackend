@@ -2,8 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 
-import routes from './src/routes/index.js';  // ✅ Thêm src/
-import { errorHandler, notFound } from './src/middleware/errorHandle.js';  // ✅ Thêm src/
+import routes from './src/routes/index.js'; 
+import { errorHandler, notFound } from './src/middleware/errorHandle.js';  
 // Load environment variables
 dotenv.config();
 
@@ -46,16 +46,16 @@ app.use(notFound);
 app.use(errorHandler);
 
 // ===== START SERVER =====
-const PORT = process.env.PORT || 5000;
+// const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
-  console.log('=================================');
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📍 API endpoint: http://localhost:${PORT}/api`);
-  console.log(`🏥 Health check: http://localhost:${PORT}/health`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log('=================================');
-});
+// app.listen(PORT, () => {
+//   console.log('=================================');
+//   console.log(`🚀 Server running on port ${PORT}`);
+//   console.log(`📍 API endpoint: http://localhost:${PORT}/api`);
+//   console.log(`🏥 Health check: http://localhost:${PORT}/health`);
+//   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+//   console.log('=================================');
+// });
 
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (err) => {
