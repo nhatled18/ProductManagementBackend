@@ -13,25 +13,19 @@ dotenv.config();
 const app = express();
 
 // ===== INIT PRISMA =====
-const prisma = new PrismaClient();
-
-// ===== CHECK DATABASE CONNECTION =====
-prisma.$connect()
-  .then(() => console.log('✅ Kết nối database thành công!'))
-  .catch((err) => console.error('❌ Lỗi kết nối database:', err.message));
+const prisma = new PrismaClient({
+  log: ['query', 'error', 'warn'], // Bật logging để debug
+});
 
 // ===== MIDDLEWARE =====
-// CORS
 app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:5173',
   credentials: true
 }));
 
-// Body parser
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Logging (development only)
 if (process.env.NODE_ENV === 'development') {
   app.use((req, res, next) => {
     console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
@@ -40,8 +34,6 @@ if (process.env.NODE_ENV === 'development') {
 }
 
 // ===== ROUTES =====
-
-// Default route — kiểm tra backend có chạy không
 app.get('/', (req, res) => {
   res.json({
     message: '🚀 Backend đang hoạt động!',
@@ -50,10 +42,8 @@ app.get('/', (req, res) => {
   });
 });
 
-// API chính
 app.use('/api', routes);
 
-// Health check
 app.get('/health', async (req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
@@ -76,29 +66,55 @@ app.get('/health', async (req, res) => {
 app.use(notFound);
 app.use(errorHandler);
 
-// ===== EXPORT APP (Vercel sẽ tự chạy app) =====
+// ===== STARTUP FUNCTION =====
+async function startServer() {
+  try {
+    // 1. Connect database trước
+    await prisma.$connect();
+    console.log('✅ Kết nối database thành công!');
+
+    // 2. Sau đó mới start server
+    if (process.env.NODE_ENV !== 'production') {
+      const PORT = process.env.PORT || 5000;
+      app.listen(PORT, () => {
+        console.log('=================================');
+        console.log(`🚀 Server running on port ${PORT}`);
+        console.log(`📍 API endpoint: http://localhost:${PORT}/api`);
+        console.log(`🏥 Health check: http://localhost:${PORT}/health`);
+        console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+        console.log('=================================');
+      });
+    }
+  } catch (err) {
+    console.error('❌ Lỗi khởi động server:', err);
+    process.exit(1);
+  }
+}
+
+// ===== START SERVER =====
+startServer();
+
+// ===== EXPORT APP (cho Vercel) =====
 export default app;
 
-// ===== LOCAL DEVELOPMENT ONLY =====
-if (process.env.NODE_ENV !== 'production') {
-  const PORT = process.env.PORT || 5000;
-  app.listen(PORT, () => {
-    console.log('=================================');
-    console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📍 API endpoint: http://localhost:${PORT}/api`);
-    console.log(`🏥 Health check: http://localhost:${PORT}/health`);
-    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log('=================================');
-  });
+// ===== GRACEFUL SHUTDOWN =====
+async function shutdown() {
+  console.log('\n🔄 Đang đóng kết nối...');
+  await prisma.$disconnect();
+  console.log('✅ Đã đóng kết nối database');
+  process.exit(0);
 }
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
 // ===== ERROR MONITORING =====
 process.on('unhandledRejection', (err) => {
   console.error('❌ Unhandled Promise Rejection:', err);
-  process.exit(1);
+  prisma.$disconnect().then(() => process.exit(1));
 });
 
 process.on('uncaughtException', (err) => {
   console.error('❌ Uncaught Exception:', err);
-  process.exit(1);
+  prisma.$disconnect().then(() => process.exit(1));
 });
