@@ -1,14 +1,24 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import { PrismaClient } from '@prisma/client';
 
 import routes from './src/routes/index.js';
 import { errorHandler, notFound } from './src/middleware/errorHandle.js';
 
-// Load environment variables
+// ===== LOAD ENV =====
 dotenv.config();
 
+// ===== INIT APP =====
 const app = express();
+
+// ===== INIT PRISMA =====
+const prisma = new PrismaClient();
+
+// ===== CHECK DATABASE CONNECTION =====
+prisma.$connect()
+  .then(() => console.log('✅ Kết nối database thành công!'))
+  .catch((err) => console.error('❌ Lỗi kết nối database:', err.message));
 
 // ===== MIDDLEWARE =====
 // CORS
@@ -21,7 +31,7 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Logging middleware (development only)
+// Logging (development only)
 if (process.env.NODE_ENV === 'development') {
   app.use((req, res, next) => {
     console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
@@ -44,21 +54,29 @@ app.get('/', (req, res) => {
 app.use('/api', routes);
 
 // Health check
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
-  });
+app.get('/health', async (req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({
+      status: 'OK',
+      db: 'connected',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime()
+    });
+  } catch (err) {
+    res.status(500).json({
+      status: 'ERROR',
+      db: 'disconnected',
+      message: err.message
+    });
+  }
 });
 
 // ===== ERROR HANDLING =====
 app.use(notFound);
 app.use(errorHandler);
 
-// ===== EXPORT APP =====
-// ⚠️ Quan trọng: KHÔNG chạy app.listen() ở đây khi deploy lên Vercel
-// Vercel sẽ tự start app theo request
+// ===== EXPORT APP (Vercel sẽ tự chạy app) =====
 export default app;
 
 // ===== LOCAL DEVELOPMENT ONLY =====
