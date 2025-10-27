@@ -14,71 +14,60 @@ const app = express();
 
 // ===== INIT PRISMA =====
 const prisma = new PrismaClient({
-  log: ['query', 'error', 'warn'],
+  log: ['query', 'error', 'warn'], // bật log để debug dễ hơn
 });
 
-// ===== MIDDLEWARE =====
-// ⭐ FIX CORS
-const allowedOrigins = [
-  'https://product-management-frontend-six.vercel.app',
-  'http://localhost:5173',
-  'http://localhost:3000',
-  process.env.FRONTEND_URL
-].filter(Boolean);
+// ===== CONFIG =====
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://product-management-frontend-six.vercel.app';
+const LOCAL_URLS = ['http://localhost:5173', 'http://localhost:3000'];
 
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Cho phép requests không có origin (Postman, mobile apps)
-    if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      console.log('⚠️ Origin bị chặn:', origin);
-      callback(null, true); // Tạm thời cho phép tất cả để test
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-};
-
-app.use(cors(corsOptions));
-
-// ⭐ Xử lý preflight requests (QUAN TRỌNG!)
+// ===== FIX CORS =====
+// Đặt đoạn này LÊN TRÊN CÙNG, để mọi route (kể cả 500) đều có header
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
-  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,PATCH,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  const origin = req.headers.origin;
+  if ([FRONTEND_URL, ...LOCAL_URLS].includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  }
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
   res.header('Access-Control-Allow-Credentials', 'true');
-  
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
   next();
 });
 
+// Dùng cors() để tương thích local (vẫn nên có)
+app.use(cors({
+  origin: [FRONTEND_URL, ...LOCAL_URLS],
+  credentials: true,
+}));
+
+// ===== BODY PARSING =====
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// ===== DEBUG LOGGER =====
 if (process.env.NODE_ENV === 'development') {
   app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
     next();
   });
 }
 
-// ===== ROUTES =====
+// ===== DEFAULT ROUTE =====
 app.get('/', (req, res) => {
   res.json({
     message: '🚀 Backend đang hoạt động!',
     availableEndpoints: ['/api', '/health'],
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
   });
 });
 
+// ===== API ROUTES =====
 app.use('/api', routes);
 
+// ===== HEALTH CHECK =====
 app.get('/health', async (req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
@@ -86,27 +75,28 @@ app.get('/health', async (req, res) => {
       status: 'OK',
       db: 'connected',
       timestamp: new Date().toISOString(),
-      uptime: process.uptime()
+      uptime: process.uptime(),
     });
   } catch (err) {
     res.status(500).json({
       status: 'ERROR',
       db: 'disconnected',
-      message: err.message
+      message: err.message,
     });
   }
 });
 
-// ===== ERROR HANDLING =====
+// ===== ERROR HANDLERS =====
 app.use(notFound);
 app.use(errorHandler);
 
-// ===== STARTUP FUNCTION =====
+// ===== LOCAL DEVELOPMENT SERVER =====
 async function startServer() {
   try {
     await prisma.$connect();
     console.log('✅ Kết nối database thành công!');
 
+    // Chỉ chạy app.listen khi ở local (Vercel không cần)
     if (process.env.NODE_ENV !== 'production') {
       const PORT = process.env.PORT || 5000;
       app.listen(PORT, () => {
@@ -126,6 +116,7 @@ async function startServer() {
 
 startServer();
 
+// ===== EXPORT CHO VERCEL =====
 export default app;
 
 // ===== GRACEFUL SHUTDOWN =====
