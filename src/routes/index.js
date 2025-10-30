@@ -6,6 +6,7 @@ import productRoutes from './productRoutes.js';
 import transactionsRoutes from './transactionsRoutes.js';
 import historyRoutes from './historyRoutes.js';
 import dashboardRoutes from './dashboardRoutes.js';
+import inventoryRoutes from './inventoryRoutes.js';
 
 // Mount routes
 router.use('/auth', authRoutes);
@@ -14,6 +15,7 @@ router.use('/transactions', transactionsRoutes);
 // router.use('/imports', transactionsRoutes); 
 router.use('/history', historyRoutes);
 router.use('/dashboard', dashboardRoutes);
+router.use('/inventory', inventoryRoutes);
 
 // Health check (optional)
 // router.get('/health', (req, res) => {

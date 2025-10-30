@@ -14,11 +14,13 @@ model User {
   password  String
   fullName  String?  @map("full_name")
   role      String   @default("user")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
   
   historyLogs  HistoryLog[]
   transactions Transaction[]
+  
+  @@map("users")
 }
 
 model Product {
@@ -38,36 +40,46 @@ model Product {
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
   
+  // ✅ Cascade delete - Khi xóa product thì tự động xóa transactions & history logs
   transactions Transaction[]
   historyLogs  HistoryLog[]
   
   @@index([sku])
   @@index([group])
+  @@index([productName])
   @@map("products")
 }
 
 model Transaction {
-  id        Int      @id @default(autoincrement())
-  productId Int      @map("product_id")
-  userId    Int?     @map("user_id")
-  type      String   // 'import' or 'export'
-  quantity  Int
-  note      String?
-  date      DateTime @default(now())
-  createdAt DateTime @default(now()) @map("created_at")
+  id              Int      @id @default(autoincrement())
+  productId       Int      @map("product_id")
+  userId          Int?     @map("user_id")
+  type            String   // 'import' or 'export'
+  quantity        Int
+  unitPrice       Decimal  @default(0) @map("unit_price") @db.Decimal(12, 2)  
+  transactionCode String   @default("") @map("transaction_code")               
+  summary         String   @default("")                                        
+  createdBy       String   @default("") @map("created_by")                     
+  reason          String   @default("")                                        
+  note            String   @default("")
+  date            DateTime @default(now())
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")                       
+  
   
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-  user    User?   @relation(fields: [userId], references: [id])
+  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
   
   @@index([productId])
   @@index([type])
   @@index([date])
+  @@index([transactionCode])
   @@map("transactions")
 }
 
 model HistoryLog {
   id          Int      @id @default(autoincrement())
-  action      String   // 'add', 'update', 'delete', 'import', 'export'
+  action      String   // 'create_product', 'update_product', 'delete_product', 'import_transaction', 'export_transaction', 'delete_transaction'
   productId   Int?     @map("product_id")
   userId      Int?     @map("user_id")
   productName String   @map("product_name")
@@ -75,10 +87,13 @@ model HistoryLog {
   details     String?
   timestamp   DateTime @default(now())
   
-  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
-  user    User?    @relation(fields: [userId], references: [id])
   
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  @@index([productId])
   @@index([userId])
   @@index([timestamp])
+  @@index([action])
   @@map("history_logs")
 }
