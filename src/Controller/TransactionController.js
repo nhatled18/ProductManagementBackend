@@ -22,13 +22,9 @@ class TransactionController {
       const skip = (page - 1) * limit;
       const where = {};
 
-      // Filter by type (import/export)
       if (type) where.type = type;
-
-      // Filter by productId
       if (productId) where.productId = Number(productId);
 
-      // Filter by date range
       if (startDate || endDate) {
         where.date = {};
         if (startDate) where.date.gte = new Date(startDate);
@@ -61,7 +57,6 @@ class TransactionController {
         prisma.transaction.count({ where })
       ]);
 
-      // Format response theo structure của TransactionTab
       const formatted = transactions.map(t => ({
         id: t.id,
         date: t.date.toISOString().split('T')[0],
@@ -69,7 +64,6 @@ class TransactionController {
         summary: t.summary || '',
         createdBy: t.user?.username || t.createdBy || 'System',
         sku: t.product.sku,
-        productId: t.productId,
         productName: t.product.productName,
         group: t.product.group,
         quantity: t.quantity,
@@ -80,7 +74,6 @@ class TransactionController {
         createdAt: t.createdAt
       }));
 
-      // Filter by search (frontend filtering fallback)
       let filtered = formatted;
       if (search) {
         const searchLower = search.toLowerCase();
@@ -91,7 +84,6 @@ class TransactionController {
         );
       }
 
-      // Filter by group
       if (group && group !== 'all') {
         filtered = filtered.filter(t => t.group === group);
       }
@@ -154,7 +146,6 @@ class TransactionController {
           summary: transaction.summary,
           createdBy: transaction.user?.username || transaction.createdBy,
           sku: transaction.product.sku,
-          productId: transaction.productId,
           productName: transaction.product.productName,
           group: transaction.product.group,
           quantity: transaction.quantity,
@@ -173,6 +164,39 @@ class TransactionController {
     }
   }
 
+  // Helper: Tìm hoặc tạo product
+  async findOrCreateProduct(productName, sku = null) {
+    let product = null;
+
+    // 1. Tìm theo SKU nếu có
+    if (sku) {
+      product = await prisma.product.findFirst({
+        where: { sku: sku }
+      });
+    }
+
+    // 2. Tìm theo tên sản phẩm nếu chưa tìm thấy
+    if (!product) {
+      product = await prisma.product.findFirst({
+        where: { productName: productName }
+      });
+    }
+
+    // 3. Tạo mới nếu không tìm thấy
+    if (!product) {
+      product = await prisma.product.create({
+        data: {
+          productName: productName,
+          sku: sku || `AUTO-${Date.now()}`,
+          group: 'Chưa phân loại'
+        }
+      });
+      console.log('✅ Auto-created product:', product.id, product.productName);
+    }
+
+    return product;
+  }
+
   // POST /api/transactions
   async create(req, res) {
     try {
@@ -181,19 +205,20 @@ class TransactionController {
         transactionCode,
         summary,
         createdBy,
-        productId,
+        productName,
+        sku,
         quantity,
         unitPrice,
         reason,
         note,
-        type // 'import' hoặc 'export'
+        type
       } = req.body;
 
-      // Validation
-      if (!productId || !quantity || !type) {
+      // ✅ Validation
+      if (!productName || !quantity || !type) {
         return res.status(400).json({
           success: false,
-          error: 'Vui lòng điền đầy đủ thông tin: productId, quantity, type'
+          error: 'Vui lòng điền đầy đủ: productName, quantity, type'
         });
       }
 
@@ -204,29 +229,10 @@ class TransactionController {
         });
       }
 
-      // Lấy product
-      const product = await prisma.product.findUnique({
-        where: { id: Number(productId) }
-      });
+      // ✅ Tìm hoặc tạo product
+      const product = await this.findOrCreateProduct(productName, sku);
 
-      if (!product) {
-        return res.status(404).json({
-          success: false,
-          error: 'Không tìm thấy sản phẩm'
-        });
-      }
-
-      // Kiểm tra tồn kho khi xuất
-      if (type === 'export' && product.quantity < quantity) {
-        return res.status(400).json({
-          success: false,
-          error: `Không đủ hàng! Tồn kho: ${product.quantity}`
-        });
-      }
-
-      const quantityChange = type === 'import' ? Number(quantity) : -Number(quantity);
-
-      // Tạo transaction và update product trong 1 transaction
+      // Tạo transaction
       const result = await prisma.$transaction(async (tx) => {
         const transaction = await tx.transaction.create({
           data: {
@@ -234,7 +240,7 @@ class TransactionController {
             transactionCode: transactionCode || '',
             summary: summary || '',
             createdBy: createdBy || req.user?.username || 'System',
-            productId: Number(productId),
+            productId: product.id,
             userId: req.user?.id || null,
             quantity: Number(quantity),
             unitPrice: Number(unitPrice) || 0,
@@ -253,30 +259,18 @@ class TransactionController {
           }
         });
 
-        // Update product quantities
-        const updatedProduct = await tx.product.update({
-          where: { id: Number(productId) },
-          data: {
-            quantity: { increment: quantityChange },
-            newStock: type === 'import' ? { increment: Number(quantity) } : undefined,
-            soldStock: type === 'export' ? { increment: Number(quantity) } : undefined,
-            endingStock: { increment: quantityChange }
-          }
-        });
-
-        // Log history
         await tx.historyLog.create({
           data: {
             action: type === 'import' ? 'import_transaction' : 'export_transaction',
-            productId: Number(productId),
+            productId: product.id,
             userId: req.user?.id || null,
-            productName: updatedProduct.productName,
-            productSku: updatedProduct.sku,
-            details: `${type === 'import' ? 'Nhập' : 'Xuất'} ${quantity} ${updatedProduct.productName}. ${note || ''}`
+            productName: product.productName,
+            productSku: product.sku,
+            details: `${type === 'import' ? 'Nhập' : 'Xuất'} ${quantity} ${product.productName}. ${note || ''}`
           }
         });
 
-        return { transaction, updatedProduct };
+        return { transaction };
       });
 
       res.status(201).json({
@@ -288,20 +282,19 @@ class TransactionController {
           transactionCode: result.transaction.transactionCode,
           productName: result.transaction.product.productName,
           quantity: result.transaction.quantity,
-          type: result.transaction.type,
-          updatedQuantity: result.updatedProduct.quantity
+          type: result.transaction.type
         }
       });
     } catch (error) {
       console.error('Create transaction error:', error);
       res.status(500).json({
         success: false,
-        error: 'Lỗi khi tạo giao dịch'
+        error: 'Lỗi khi tạo giao dịch: ' + error.message
       });
     }
   }
 
-  // POST /api/transactions/batch - Tạo nhiều transactions cùng lúc
+  // POST /api/transactions/batch
   async createBatch(req, res) {
     try {
       const { transactions } = req.body;
@@ -320,29 +313,17 @@ class TransactionController {
 
       for (const txData of transactions) {
         try {
-          const product = await prisma.product.findUnique({
-            where: { id: Number(txData.productId) }
-          });
-
-          if (!product) {
+          // ✅ Validation
+          if (!txData.productName || !txData.quantity || !txData.type) {
             results.failed.push({
               data: txData,
-              error: 'Không tìm thấy sản phẩm'
+              error: 'Thiếu productName, quantity hoặc type'
             });
             continue;
           }
 
-          if (txData.type === 'export' && product.quantity < txData.quantity) {
-            results.failed.push({
-              data: txData,
-              error: `Không đủ hàng! Tồn: ${product.quantity}`
-            });
-            continue;
-          }
-
-          const quantityChange = txData.type === 'import' 
-            ? Number(txData.quantity) 
-            : -Number(txData.quantity);
+          // ✅ Tìm hoặc tạo product
+          const product = await this.findOrCreateProduct(txData.productName, txData.sku);
 
           const result = await prisma.$transaction(async (tx) => {
             const transaction = await tx.transaction.create({
@@ -351,7 +332,7 @@ class TransactionController {
                 transactionCode: txData.transactionCode || '',
                 summary: txData.summary || '',
                 createdBy: txData.createdBy || req.user?.username || 'System',
-                productId: Number(txData.productId),
+                productId: product.id,
                 userId: req.user?.id || null,
                 quantity: Number(txData.quantity),
                 unitPrice: Number(txData.unitPrice) || 0,
@@ -361,21 +342,12 @@ class TransactionController {
               }
             });
 
-            await tx.product.update({
-              where: { id: Number(txData.productId) },
-              data: {
-                quantity: { increment: quantityChange },
-                newStock: txData.type === 'import' ? { increment: Number(txData.quantity) } : undefined,
-                soldStock: txData.type === 'export' ? { increment: Number(txData.quantity) } : undefined,
-                endingStock: { increment: quantityChange }
-              }
-            });
-
             return transaction;
           });
 
           results.success.push(result);
         } catch (error) {
+          console.error('Error processing transaction:', error);
           results.failed.push({
             data: txData,
             error: error.message
@@ -397,7 +369,7 @@ class TransactionController {
       console.error('Batch create error:', error);
       res.status(500).json({
         success: false,
-        error: 'Lỗi khi tạo batch transactions'
+        error: 'Lỗi khi tạo batch transactions: ' + error.message
       });
     }
   }
@@ -420,20 +392,12 @@ class TransactionController {
         });
       }
 
-      // Nếu thay đổi quantity, cần revert và apply lại
-      const oldQuantityChange = transaction.type === 'import' 
-        ? transaction.quantity 
-        : -transaction.quantity;
-
-      const newQuantity = updateData.quantity !== undefined 
-        ? Number(updateData.quantity) 
-        : transaction.quantity;
-
-      const newQuantityChange = transaction.type === 'import' 
-        ? newQuantity 
-        : -newQuantity;
-
-      const quantityDiff = newQuantityChange - oldQuantityChange;
+      // Nếu thay đổi productName → tìm/tạo product mới
+      let newProductId = transaction.productId;
+      if (updateData.productName && updateData.productName !== transaction.product.productName) {
+        const newProduct = await this.findOrCreateProduct(updateData.productName, updateData.sku);
+        newProductId = newProduct.id;
+      }
 
       const result = await prisma.$transaction(async (tx) => {
         const updated = await tx.transaction.update({
@@ -442,10 +406,13 @@ class TransactionController {
             date: updateData.date ? new Date(updateData.date) : undefined,
             transactionCode: updateData.transactionCode,
             summary: updateData.summary,
-            quantity: newQuantity,
+            createdBy: updateData.createdBy,
+            productId: newProductId,
+            quantity: updateData.quantity !== undefined ? Number(updateData.quantity) : undefined,
             unitPrice: updateData.unitPrice !== undefined ? Number(updateData.unitPrice) : undefined,
             reason: updateData.reason,
-            note: updateData.note
+            note: updateData.note,
+            type: updateData.type
           },
           include: {
             product: {
@@ -458,30 +425,33 @@ class TransactionController {
           }
         });
 
-        // Update product quantity nếu có thay đổi
-        if (quantityDiff !== 0) {
-          await tx.product.update({
-            where: { id: transaction.productId },
-            data: {
-              quantity: { increment: quantityDiff },
-              endingStock: { increment: quantityDiff }
-            }
-          });
-        }
-
         return updated;
       });
 
       res.json({
         success: true,
         message: 'Cập nhật giao dịch thành công',
-        data: result
+        data: {
+          id: result.id,
+          date: result.date.toISOString().split('T')[0],
+          transactionCode: result.transactionCode,
+          summary: result.summary,
+          createdBy: result.createdBy,
+          sku: result.product.sku,
+          productName: result.product.productName,
+          group: result.product.group,
+          quantity: result.quantity,
+          unitPrice: result.unitPrice,
+          reason: result.reason,
+          note: result.note,
+          type: result.type
+        }
       });
     } catch (error) {
       console.error('Update transaction error:', error);
       res.status(500).json({
         success: false,
-        error: 'Lỗi khi cập nhật giao dịch'
+        error: 'Lỗi khi cập nhật giao dịch: ' + error.message
       });
     }
   }
@@ -503,24 +473,9 @@ class TransactionController {
         });
       }
 
-      // Hoàn nguyên quantity
-      const quantityChange = transaction.type === 'import'
-        ? -transaction.quantity
-        : transaction.quantity;
-
       await prisma.$transaction(async (tx) => {
         await tx.transaction.delete({
           where: { id: Number(id) }
-        });
-
-        await tx.product.update({
-          where: { id: transaction.productId },
-          data: {
-            quantity: { increment: quantityChange },
-            newStock: transaction.type === 'import' ? { decrement: transaction.quantity } : undefined,
-            soldStock: transaction.type === 'export' ? { decrement: transaction.quantity } : undefined,
-            endingStock: { increment: quantityChange }
-          }
         });
 
         await tx.historyLog.create({
@@ -543,7 +498,7 @@ class TransactionController {
       console.error('Delete transaction error:', error);
       res.status(500).json({
         success: false,
-        error: 'Lỗi khi xóa giao dịch'
+        error: 'Lỗi khi xóa giao dịch: ' + error.message
       });
     }
   }
@@ -566,27 +521,22 @@ class TransactionController {
       });
 
       await prisma.$transaction(async (tx) => {
-        // Hoàn nguyên quantities
-        for (const transaction of transactions) {
-          const quantityChange = transaction.type === 'import'
-            ? -transaction.quantity
-            : transaction.quantity;
-
-          await tx.product.update({
-            where: { id: transaction.productId },
-            data: {
-              quantity: { increment: quantityChange },
-              newStock: transaction.type === 'import' ? { decrement: transaction.quantity } : undefined,
-              soldStock: transaction.type === 'export' ? { decrement: transaction.quantity } : undefined,
-              endingStock: { increment: quantityChange }
-            }
-          });
-        }
-
-        // Xóa transactions
         await tx.transaction.deleteMany({
           where: { id: { in: ids.map(id => Number(id)) } }
         });
+
+        for (const transaction of transactions) {
+          await tx.historyLog.create({
+            data: {
+              action: 'delete_transaction',
+              productId: transaction.productId,
+              userId: req.user?.id || null,
+              productName: transaction.product.productName,
+              productSku: transaction.product.sku,
+              details: `Xóa giao dịch ${transaction.type} ${transaction.quantity} sản phẩm`
+            }
+          });
+        }
       });
 
       res.json({
@@ -598,7 +548,7 @@ class TransactionController {
       console.error('Delete many error:', error);
       res.status(500).json({
         success: false,
-        error: 'Lỗi khi xóa nhiều giao dịch'
+        error: 'Lỗi khi xóa nhiều giao dịch: ' + error.message
       });
     }
   }
@@ -689,15 +639,12 @@ class TransactionController {
         })
       ]);
 
-      // Tính tổng giá trị
       const totalAmount = transactions.reduce((sum, t) => 
         sum + (t.quantity * t.unitPrice), 0
       );
 
-      // Đếm unique products
       const uniqueProducts = new Set(transactions.map(t => t.productId)).size;
 
-      // Transactions trong tháng này
       const now = new Date();
       const thisMonth = transactions.filter(t => {
         const tDate = new Date(t.date);
@@ -731,7 +678,7 @@ class TransactionController {
     }
   }
 
-  // GET /api/transactions/export - Export to Excel
+  // GET /api/transactions/export
   async exportTransactions(req, res) {
     try {
       const { type, startDate, endDate } = req.query;
@@ -825,7 +772,6 @@ class TransactionController {
   // POST /api/transactions/import-excel
   async importExcel(req, res) {
     try {
-      // TODO: Implement Excel import with multer
       res.status(501).json({
         success: false,
         message: 'Tính năng đang phát triển'

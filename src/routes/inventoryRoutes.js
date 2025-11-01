@@ -1,36 +1,35 @@
-// server/routes/inventoryRoutes.js
 import express from 'express';
 import InventoryController from '../Controller/inventoryController.js';
 
 const router = express.Router();
 
-// ⚠️ QUAN TRỌNG: Các route cụ thể phải đặt TRƯỚC các route có params (:id)
+// ✅ FIXED: Bỏ /inventories, chỉ dùng / vì đã có prefix /inventory
 
-// GET /api/inventory/stats - Thống kê
-router.get('/stats', InventoryController.getStats);
+// GET /api/inventory/stats
+router.get('/stats', (req, res) => InventoryController.getInventoryStats(req, res));
 
-// POST /api/inventory/delete-many - Xóa nhiều
-router.post('/delete-many', InventoryController.deleteMany);
+// GET /api/inventory/stock-types
+router.get('/stock-types', (req, res) => InventoryController.getStockTypes(req, res));
 
-// POST /api/inventory/import - Import Excel
-router.post('/import', InventoryController.importInventory);
+// GET /api/inventory/search
+router.get('/search', (req, res) => InventoryController.searchInventories(req, res));
 
-// GET /api/inventory/export - Export Excel
-router.get('/export', InventoryController.exportInventory);
+// POST /api/inventory/batch
+router.post('/batch', (req, res) => InventoryController.batchCreateInventories(req, res));
 
-// GET /api/inventory - Lấy danh sách
-router.get('/', InventoryController.getAllInventory);
+// GET /api/inventory/:id
+router.get('/:id', (req, res) => InventoryController.getInventoryById(req, res));
 
-// POST /api/inventory - Tạo mới
-router.post('/', InventoryController.createProduct);
+// GET /api/inventory
+router.get('/', (req, res) => InventoryController.getAllInventories(req, res));
 
-// GET /api/inventory/:id - Lấy theo ID
-router.get('/:id', InventoryController.getProductById);
+// POST /api/inventory
+router.post('/', (req, res) => InventoryController.createInventory(req, res));
 
-// PUT /api/inventory/:id - Cập nhật
-router.put('/:id', InventoryController.updateProduct);
+// PUT /api/inventory/:id
+router.put('/:id', (req, res) => InventoryController.updateInventory(req, res));
 
-// DELETE /api/inventory/:id - Xóa
-router.delete('/:id', InventoryController.deleteProduct);
+// DELETE /api/inventory/:id
+router.delete('/:id', (req, res) => InventoryController.deleteInventory(req, res));
 
 export default router;

@@ -1,371 +1,481 @@
-// server/controllers/InventoryController.js
 import { PrismaClient } from '@prisma/client';
-import ExcelJS from 'exceljs'; // npm install exceljs
-
 const prisma = new PrismaClient();
 
 class InventoryController {
-  
-  // GET /api/inventory
-  async getAllInventory(req, res) {
-    try {
-      const { page = 1, limit = 20, group, search } = req.query;
-      const skip = (page - 1) * limit;
 
+  // GET /api/inventories - Get all inventory records
+  async getAllInventories(req, res) {
+    try {
+      const inventories = await prisma.inventory.findMany({
+        include: {
+          product: {
+            select: {
+              id: true,
+              productName: true,
+              sku: true,
+              group: true,
+              unit: true
+            }
+          }
+        },
+        orderBy: { createdAt: 'desc' }
+      });
+
+      res.json(inventories);
+    } catch (error) {
+      console.error('Get all inventories error:', error);
+      res.status(500).json({ error: 'Lỗi khi lấy danh sách tồn kho' });
+    }
+  }
+
+  // GET /api/inventories/search?q=...&group=...&stockType1=...
+  async searchInventories(req, res) {
+    try {
+      const { q = '', group, stockType1 } = req.query;
+      
       const where = {};
-      if (group && group !== 'all') where.group = group;
-      if (search) {
-        where.OR = [
-          { sku: { contains: search, mode: 'insensitive' } },
-          { productName: { contains: search, mode: 'insensitive' } }
-        ];
+
+      // Filter by stockType1
+      if (stockType1) {
+        where.stockType1 = stockType1;
       }
 
-      const [items, total] = await Promise.all([
-        prisma.product.findMany({
-          where,
-          select: {
-            id: true,
-            group: true,
-            sku: true,
-            productName: true,
-            quantity: true,
-            displayStock: true,
-            warehouseStock: true,
-            newStock: true,
-            soldStock: true,
-            damagedStock: true,
-            endingStock: true,
-            cost: true,
-            retailPrice: true
+      // Filter by product group or search term
+      if (group || q) {
+        where.product = {};
+        
+        if (group && group !== 'all') {
+          where.product.group = group;
+        }
+        
+        if (q) {
+          where.product.OR = [
+            { productName: { contains: q, mode: 'insensitive' } },
+            { sku: { contains: q, mode: 'insensitive' } },
+            { group: { contains: q, mode: 'insensitive' } }
+          ];
+        }
+      }
+
+      const inventories = await prisma.inventory.findMany({
+        where,
+        include: {
+          product: {
+            select: {
+              id: true,
+              productName: true,
+              sku: true,
+              group: true,
+              unit: true
+            }
+          }
+        },
+        orderBy: { createdAt: 'desc' }
+      });
+
+      res.json(inventories);
+    } catch (error) {
+      console.error('Search inventories error:', error);
+      res.status(500).json({ error: 'Lỗi khi tìm kiếm tồn kho' });
+    }
+  }
+
+  // GET /api/inventories/:id - Get inventory by ID
+  async getInventoryById(req, res) {
+    try {
+      const id = Number(req.params.id);
+      
+      const inventory = await prisma.inventory.findUnique({
+        where: { id },
+        include: {
+          product: {
+            select: {
+              id: true,
+              productName: true,
+              sku: true,
+              group: true,
+              stockType1: true,
+              stockType2: true,
+              unit: true
+            }
+          }
+        }
+      });
+
+      if (!inventory) {
+        return res.status(404).json({ error: 'Không tìm thấy bản ghi tồn kho' });
+      }
+
+      res.json(inventory);
+    } catch (error) {
+      console.error('Get inventory error:', error);
+      res.status(500).json({ error: 'Lỗi khi lấy thông tin tồn kho' });
+    }
+  }
+
+  // POST /api/inventories - Create new inventory record
+  async createInventory(req, res) {
+    try {
+      const {
+        productId,
+        stockType1,
+        stockType2,
+        retailPrice = 0,
+        cost = 0,
+        initialStock = 0,
+        displayStock = 0,
+        stockIn = 0,
+        stockOut = 0,
+        damaged = 0,
+        note
+      } = req.body;
+
+      // Validate required fields
+      if (!productId) {
+        return res.status(400).json({ 
+          error: 'Product ID là bắt buộc' 
+        });
+      }
+
+      // Check if product exists
+      const product = await prisma.product.findUnique({
+        where: { id: Number(productId) }
+      });
+
+      if (!product) {
+        return res.status(400).json({ 
+          error: 'Không tìm thấy sản phẩm' 
+        });
+      }
+
+      // Calculate ending stock
+      const endingStock = initialStock + stockIn - stockOut - damaged;
+
+      // Create inventory record
+      const inventory = await prisma.inventory.create({
+        data: {
+          productId: Number(productId),
+          stockType1: stockType1?.trim() || '',
+          stockType2: stockType2?.trim() || '',
+          retailPrice: Number(retailPrice),
+          cost: Number(cost),
+          initialStock: Number(initialStock),
+          displayStock: Number(displayStock),
+          stockIn: Number(stockIn),
+          stockOut: Number(stockOut),
+          damaged: Number(damaged),
+          endingStock: endingStock,
+          note: note?.trim() || ''
+        },
+        include: {
+          product: {
+            select: {
+              id: true,
+              productName: true,
+              sku: true,
+              group: true
+            }
+          }
+        }
+      });
+
+      // Create history log
+      await prisma.historyLog.create({
+        data: {
+          action: 'create_inventory',
+          productId: product.id,
+          userId: req.user?.id || null,
+          productName: product.productName,
+          productSku: product.sku,
+          details: `Tạo bản ghi tồn kho: ${endingStock} sản phẩm`
+        }
+      });
+
+      res.status(201).json(inventory);
+    } catch (error) {
+      console.error('Create inventory error:', error);
+      res.status(400).json({ 
+        error: 'Lỗi khi tạo tồn kho',
+        details: error.message 
+      });
+    }
+  }
+
+  // PUT /api/inventories/:id - Update inventory
+  async updateInventory(req, res) {
+    try {
+      const id = Number(req.params.id);
+      const {
+        productId,
+        stockType1,
+        stockType2,
+        retailPrice,
+        cost,
+        initialStock,
+        displayStock,
+        stockIn,
+        stockOut,
+        damaged,
+        note
+      } = req.body;
+
+      // Find existing inventory
+      const oldInventory = await prisma.inventory.findUnique({
+        where: { id },
+        include: {
+          product: true
+        }
+      });
+
+      if (!oldInventory) {
+        return res.status(404).json({ error: 'Không tìm thấy bản ghi tồn kho' });
+      }
+
+      // Build update data
+      const updateData = {};
+      
+      if (productId !== undefined) updateData.productId = Number(productId);
+      if (stockType1 !== undefined) updateData.stockType1 = stockType1?.trim() || '';
+      if (stockType2 !== undefined) updateData.stockType2 = stockType2?.trim() || '';
+      if (retailPrice !== undefined) updateData.retailPrice = Number(retailPrice);
+      if (cost !== undefined) updateData.cost = Number(cost);
+      if (initialStock !== undefined) updateData.initialStock = Number(initialStock);
+      if (displayStock !== undefined) updateData.displayStock = Number(displayStock);
+      if (stockIn !== undefined) updateData.stockIn = Number(stockIn);
+      if (stockOut !== undefined) updateData.stockOut = Number(stockOut);
+      if (damaged !== undefined) updateData.damaged = Number(damaged);
+      if (note !== undefined) updateData.note = note?.trim() || '';
+
+      // Recalculate ending stock if any stock field changed
+      if (initialStock !== undefined || stockIn !== undefined || 
+          stockOut !== undefined || damaged !== undefined) {
+        const newInitial = initialStock !== undefined ? Number(initialStock) : oldInventory.initialStock;
+        const newStockIn = stockIn !== undefined ? Number(stockIn) : oldInventory.stockIn;
+        const newStockOut = stockOut !== undefined ? Number(stockOut) : oldInventory.stockOut;
+        const newDamaged = damaged !== undefined ? Number(damaged) : oldInventory.damaged;
+        
+        updateData.endingStock = newInitial + newStockIn - newStockOut - newDamaged;
+      }
+
+      // Update inventory
+      const inventory = await prisma.inventory.update({
+        where: { id },
+        data: updateData,
+        include: {
+          product: {
+            select: {
+              id: true,
+              productName: true,
+              sku: true,
+              group: true
+            }
+          }
+        }
+      });
+
+      // Create history log
+      await prisma.historyLog.create({
+        data: {
+          action: 'update_inventory',
+          productId: oldInventory.productId,
+          userId: req.user?.id || null,
+          productName: oldInventory.product.productName,
+          productSku: oldInventory.product.sku,
+          details: `Cập nhật tồn kho: ${inventory.endingStock} sản phẩm`
+        }
+      });
+
+      res.json(inventory);
+    } catch (error) {
+      console.error('Update inventory error:', error);
+      res.status(400).json({ 
+        error: 'Lỗi khi cập nhật tồn kho',
+        details: error.message 
+      });
+    }
+  }
+
+  // DELETE /api/inventories/:id - Delete inventory
+  async deleteInventory(req, res) {
+    try {
+      const id = Number(req.params.id);
+
+      const inventory = await prisma.inventory.findUnique({
+        where: { id },
+        include: {
+          product: true
+        }
+      });
+
+      if (!inventory) {
+        return res.status(404).json({ error: 'Không tìm thấy bản ghi tồn kho' });
+      }
+
+      // Create history log before deleting
+      await prisma.historyLog.create({
+        data: {
+          action: 'delete_inventory',
+          productId: inventory.productId,
+          userId: req.user?.id || null,
+          productName: inventory.product.productName,
+          productSku: inventory.product.sku,
+          details: `Xóa bản ghi tồn kho: ${inventory.endingStock} sản phẩm`
+        }
+      });
+
+      // Delete inventory
+      await prisma.inventory.delete({
+        where: { id }
+      });
+
+      res.json({ 
+        message: 'Xóa tồn kho thành công',
+        deletedInventory: {
+          id: inventory.id,
+          productName: inventory.product.productName,
+          sku: inventory.product.sku
+        }
+      });
+    } catch (error) {
+      console.error('Delete inventory error:', error);
+      res.status(400).json({ 
+        error: 'Lỗi khi xóa tồn kho',
+        details: error.message 
+      });
+    }
+  }
+
+  // GET /api/inventories/stats - Get inventory statistics
+  async getInventoryStats(req, res) {
+    try {
+      const [
+        totalRecords,
+        lowStockItems,
+        aggregations
+      ] = await Promise.all([
+        // Total inventory records
+        prisma.inventory.count(),
+
+        // Low stock items (endingStock < 50)
+        prisma.inventory.findMany({
+          where: {
+            endingStock: { lt: 50 }
           },
-          orderBy: { productName: 'asc' },
-          take: Number(limit),
-          skip: Number(skip)
+          include: {
+            product: {
+              select: {
+                productName: true,
+                sku: true,
+                group: true
+              }
+            }
+          },
+          orderBy: { endingStock: 'asc' },
+          take: 10
         }),
-        prisma.product.count({ where })
+
+        // Aggregations
+        prisma.inventory.aggregate({
+          _sum: {
+            initialStock: true,
+            stockIn: true,
+            stockOut: true,
+            damaged: true,
+            endingStock: true
+          },
+          _count: {
+            id: true
+          }
+        })
+      ]);
+
+      // Calculate total inventory value
+      const inventories = await prisma.inventory.findMany({
+        select: {
+          endingStock: true,
+          cost: true
+        }
+      });
+
+      const totalValue = inventories.reduce((sum, inv) => {
+        return sum + (Number(inv.cost) * inv.endingStock);
+      }, 0);
+
+      // Calculate total retail value
+      const totalRetailValue = inventories.reduce((sum, inv) => {
+        return sum + (Number(inv.retailPrice || 0) * inv.endingStock);
+      }, 0);
+
+      res.json({
+        totalRecords,
+        totalInitialStock: aggregations._sum.initialStock || 0,
+        totalStockIn: aggregations._sum.stockIn || 0,
+        totalStockOut: aggregations._sum.stockOut || 0,
+        totalDamaged: aggregations._sum.damaged || 0,
+        totalEndingStock: aggregations._sum.endingStock || 0,
+        totalValue: Math.round(totalValue),
+        totalRetailValue: Math.round(totalRetailValue),
+        lowStockCount: lowStockItems.length,
+        lowStockItems
+      });
+    } catch (error) {
+      console.error('Get inventory stats error:', error);
+      res.status(500).json({ error: 'Lỗi khi lấy thống kê tồn kho' });
+    }
+  }
+
+  // GET /api/inventories/stock-types - Get all unique stock types
+  async getStockTypes(req, res) {
+    try {
+      const [stockTypes1, stockTypes2] = await Promise.all([
+        prisma.inventory.findMany({
+          where: {
+            stockType1: {
+              not: ''
+            }
+          },
+          distinct: ['stockType1'],
+          select: {
+            stockType1: true
+          },
+          orderBy: {
+            stockType1: 'asc'
+          }
+        }),
+        prisma.inventory.findMany({
+          where: {
+            stockType2: {
+              not: ''
+            }
+          },
+          distinct: ['stockType2'],
+          select: {
+            stockType2: true
+          },
+          orderBy: {
+            stockType2: 'asc'
+          }
+        })
       ]);
 
       res.json({
-        success: true,
-        data: items,
-        pagination: {
-          page: Number(page),
-          limit: Number(limit),
-          total,
-          totalPages: Math.ceil(total / limit)
-        }
+        stockType1: stockTypes1.map(st => st.stockType1).filter(Boolean),
+        stockType2: stockTypes2.map(st => st.stockType2).filter(Boolean)
       });
     } catch (error) {
-      console.error('Get inventory error:', error);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Lỗi khi lấy danh sách tồn kho' 
-      });
+      console.error('Get stock types error:', error);
+      res.status(500).json({ error: 'Lỗi khi lấy danh sách phân loại kho' });
     }
   }
 
-  // GET /api/inventory/:id
-  async getProductById(req, res) {
-    try {
-      const { id } = req.params;
-      
-      const product = await prisma.product.findUnique({
-        where: { id: Number(id) }
-      });
-
-      if (!product) {
-        return res.status(404).json({ 
-          success: false, 
-          error: 'Không tìm thấy sản phẩm' 
-        });
-      }
-
-      res.json({
-        success: true,
-        data: product
-      });
-    } catch (error) {
-      console.error('Get product by ID error:', error);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Lỗi khi lấy thông tin sản phẩm' 
-      });
-    }
-  }
-
-  // POST /api/inventory
-  async createProduct(req, res) {
-    try {
-      const {
-        group,
-        sku,
-        productName,
-        quantity = 0,
-        displayStock = 0,
-        warehouseStock = 0,
-        cost = 0,
-        retailPrice = 0
-      } = req.body;
-
-      if (!group || !sku || !productName) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'Vui lòng nhập Nhóm, SKU và Tên sản phẩm' 
-        });
-      }
-
-      const existing = await prisma.product.findUnique({ where: { sku } });
-      if (existing) {
-        return res.status(400).json({ 
-          success: false, 
-          error: `SKU "${sku}" đã tồn tại` 
-        });
-      }
-
-      const result = await prisma.$transaction(async (tx) => {
-        const product = await tx.product.create({
-          data: {
-            group,
-            sku,
-            productName,
-            quantity: Number(quantity),
-            displayStock: Number(displayStock),
-            warehouseStock: Number(warehouseStock),
-            newStock: 0,
-            soldStock: 0,
-            damagedStock: 0,
-            endingStock: Number(quantity),
-            cost: Number(cost),
-            retailPrice: Number(retailPrice)
-          }
-        });
-
-        await tx.historyLog.create({
-          data: {
-            action: 'create_product',
-            productId: product.id,
-            userId: req.user?.id || null,
-            productName: product.productName,
-            productSku: product.sku,
-            details: `Tạo sản phẩm mới: ${quantity} cái`
-          }
-        });
-
-        return product;
-      });
-
-      res.status(201).json({
-        success: true,
-        message: 'Tạo sản phẩm thành công',
-        data: result
-      });
-    } catch (error) {
-      console.error('Create product error:', error);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Lỗi khi tạo sản phẩm' 
-      });
-    }
-  }
-
-  // PUT /api/inventory/:id
-  async updateProduct(req, res) {
-    try {
-      const { id } = req.params;
-      const data = req.body;
-
-      const product = await prisma.product.findUnique({ 
-        where: { id: Number(id) } 
-      });
-      
-      if (!product) {
-        return res.status(404).json({ 
-          success: false, 
-          error: 'Không tìm thấy sản phẩm' 
-        });
-      }
-
-      if (data.sku && data.sku !== product.sku) {
-        const existing = await prisma.product.findUnique({ 
-          where: { sku: data.sku } 
-        });
-        if (existing) {
-          return res.status(400).json({ 
-            success: false, 
-            error: `SKU "${data.sku}" đã tồn tại` 
-          });
-        }
-      }
-
-      const updated = await prisma.$transaction(async (tx) => {
-        const updatedProduct = await tx.product.update({
-          where: { id: Number(id) },
-          data: {
-            ...data,
-            cost: data.cost !== undefined ? Number(data.cost) : undefined,
-            retailPrice: data.retailPrice !== undefined ? Number(data.retailPrice) : undefined,
-          }
-        });
-
-        await tx.historyLog.create({
-          data: {
-            action: 'update_product',
-            productId: updatedProduct.id,
-            userId: req.user?.id || null,
-            productName: updatedProduct.productName,
-            productSku: updatedProduct.sku,
-            details: 'Cập nhật thông tin sản phẩm'
-          }
-        });
-
-        return updatedProduct;
-      });
-
-      res.json({ 
-        success: true, 
-        message: 'Cập nhật thành công', 
-        data: updated 
-      });
-    } catch (error) {
-      console.error('Update error:', error);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Lỗi khi cập nhật' 
-      });
-    }
-  }
-
-  // DELETE /api/inventory/:id
-  async deleteProduct(req, res) {
-    try {
-      const { id } = req.params;
-      const product = await prisma.product.findUnique({
-        where: { id: Number(id) },
-        include: { transactions: true }
-      });
-
-      if (!product) {
-        return res.status(404).json({ 
-          success: false, 
-          error: 'Không tìm thấy' 
-        });
-      }
-
-      if (product.transactions.length > 0) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'Không thể xóa sản phẩm đã có giao dịch' 
-        });
-      }
-
-      await prisma.$transaction(async (tx) => {
-        await tx.product.delete({ where: { id: Number(id) } });
-        await tx.historyLog.create({
-          data: {
-            action: 'delete_product',
-            productId: Number(id),
-            userId: req.user?.id || null,
-            productName: product.productName,
-            productSku: product.sku,
-            details: 'Xóa sản phẩm'
-          }
-        });
-      });
-
-      res.json({ 
-        success: true, 
-        message: 'Xóa thành công' 
-      });
-    } catch (error) {
-      console.error('Delete error:', error);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Lỗi khi xóa' 
-      });
-    }
-  }
-
-  // POST /api/inventory/delete-many
-  async deleteMany(req, res) {
-    try {
-      const { ids } = req.body;
-
-      if (!ids || !Array.isArray(ids) || ids.length === 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'Danh sách ID không hợp lệ'
-        });
-      }
-
-      // Kiểm tra xem có sản phẩm nào có giao dịch không
-      const productsWithTransactions = await prisma.product.findMany({
-        where: {
-          id: { in: ids.map(id => Number(id)) }
-        },
-        include: {
-          transactions: true
-        }
-      });
-
-      const cannotDelete = productsWithTransactions.filter(
-        p => p.transactions.length > 0
-      );
-
-      if (cannotDelete.length > 0) {
-        return res.status(400).json({
-          success: false,
-          error: `Không thể xóa ${cannotDelete.length} sản phẩm đã có giao dịch`,
-          cannotDeleteIds: cannotDelete.map(p => p.id)
-        });
-      }
-
-      const result = await prisma.$transaction(async (tx) => {
-        // Xóa các sản phẩm
-        const deleteResult = await tx.product.deleteMany({
-          where: { id: { in: ids.map(id => Number(id)) } }
-        });
-
-        // Log lịch sử cho mỗi sản phẩm bị xóa
-        for (const product of productsWithTransactions) {
-          await tx.historyLog.create({
-            data: {
-              action: 'delete_product',
-              productId: product.id,
-              userId: req.user?.id || null,
-              productName: product.productName,
-              productSku: product.sku,
-              details: 'Xóa sản phẩm (batch delete)'
-            }
-          });
-        }
-
-        return deleteResult;
-      });
-
-      res.json({
-        success: true,
-        message: `Xóa thành công ${result.count} sản phẩm`,
-        deletedCount: result.count
-      });
-    } catch (error) {
-      console.error('Delete many error:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Lỗi khi xóa nhiều sản phẩm'
-      });
-    }
-  }
-
-  // POST /api/inventory/import
-  async importInventory(req, res) {
+  // POST /api/inventories/batch - Batch create inventories (for import)
+  async batchCreateInventories(req, res) {
     try {
       const { inventories } = req.body;
 
-      if (!inventories || !Array.isArray(inventories) || inventories.length === 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'Dữ liệu import không hợp lệ'
+      if (!inventories || !Array.isArray(inventories)) {
+        return res.status(400).json({ 
+          error: 'Dữ liệu không hợp lệ' 
         });
       }
 
@@ -374,211 +484,66 @@ class InventoryController {
         failed: []
       };
 
-      for (const item of inventories) {
+      for (const invData of inventories) {
         try {
-          // Kiểm tra SKU đã tồn tại chưa
-          const existing = await prisma.product.findUnique({
-            where: { sku: item.sku }
+          // Check if product exists
+          const product = await prisma.product.findUnique({
+            where: { id: Number(invData.productId) }
           });
 
-          if (existing) {
-            // Cập nhật sản phẩm hiện có
-            const updated = await prisma.product.update({
-              where: { sku: item.sku },
-              data: {
-                productName: item.productName || existing.productName,
-                group: item.group || existing.group,
-                quantity: Number(item.quantity || existing.quantity),
-                displayStock: Number(item.displayStock || existing.displayStock),
-                warehouseStock: Number(item.warehouseStock || existing.warehouseStock),
-                cost: Number(item.cost || existing.cost),
-                retailPrice: Number(item.retailPrice || existing.retailPrice),
-                endingStock: Number(item.quantity || existing.quantity)
-              }
+          if (!product) {
+            results.failed.push({
+              data: invData,
+              error: 'Không tìm thấy sản phẩm'
             });
-            results.success.push(updated);
-          } else {
-            // Tạo sản phẩm mới
-            const created = await prisma.product.create({
-              data: {
-                group: item.group,
-                sku: item.sku,
-                productName: item.productName,
-                quantity: Number(item.quantity || 0),
-                displayStock: Number(item.displayStock || 0),
-                warehouseStock: Number(item.warehouseStock || 0),
-                newStock: 0,
-                soldStock: 0,
-                damagedStock: 0,
-                endingStock: Number(item.quantity || 0),
-                cost: Number(item.cost || 0),
-                retailPrice: Number(item.retailPrice || 0)
-              }
-            });
-            results.success.push(created);
+            continue;
           }
+
+          // Calculate ending stock
+          const endingStock = (invData.initialStock || 0) + 
+                             (invData.stockIn || 0) - 
+                             (invData.stockOut || 0) - 
+                             (invData.damaged || 0);
+
+          // Create inventory
+          const inventory = await prisma.inventory.create({
+            data: {
+              productId: Number(invData.productId),
+              stockType1: invData.stockType1?.trim() || '',
+              stockType2: invData.stockType2?.trim() || '',
+              retailPrice: Number(invData.retailPrice || 0),
+              cost: Number(invData.cost || 0),
+              initialStock: Number(invData.initialStock || 0),
+              displayStock: Number(invData.displayStock || 0),
+              stockIn: Number(invData.stockIn || 0),
+              stockOut: Number(invData.stockOut || 0),
+              damaged: Number(invData.damaged || 0),
+              endingStock: endingStock,
+              note: invData.note?.trim() || ''
+            }
+          });
+
+          results.success.push(inventory);
         } catch (error) {
           results.failed.push({
-            item,
+            data: invData,
             error: error.message
           });
         }
       }
 
       res.json({
-        success: true,
-        message: `Import hoàn tất: ${results.success.length} thành công, ${results.failed.length} thất bại`,
-        data: {
-          successCount: results.success.length,
-          failedCount: results.failed.length,
-          successItems: results.success,
-          failedItems: results.failed
-        }
+        message: `Batch import hoàn tất: ${results.success.length} thành công, ${results.failed.length} thất bại`,
+        successCount: results.success.length,
+        failedCount: results.failed.length,
+        successItems: results.success,
+        failedItems: results.failed
       });
     } catch (error) {
-      console.error('Import error:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Lỗi khi import dữ liệu'
-      });
-    }
-  }
-
-  // GET /api/inventory/export
-  async exportInventory(req, res) {
-    try {
-      const { group, search } = req.query;
-
-      const where = {};
-      if (group && group !== 'all') where.group = group;
-      if (search) {
-        where.OR = [
-          { sku: { contains: search, mode: 'insensitive' } },
-          { productName: { contains: search, mode: 'insensitive' } }
-        ];
-      }
-
-      const products = await prisma.product.findMany({
-        where,
-        orderBy: { productName: 'asc' }
-      });
-
-      // Tạo Excel file với ExcelJS
-      const workbook = new ExcelJS.Workbook();
-      const worksheet = workbook.addWorksheet('Tồn kho');
-
-      // Định nghĩa columns
-      worksheet.columns = [
-        { header: 'STT', key: 'stt', width: 10 },
-        { header: 'NHÓM', key: 'group', width: 20 },
-        { header: 'SKU', key: 'sku', width: 15 },
-        { header: 'TÊN SẢN PHẨM', key: 'productName', width: 30 },
-        { header: 'SỐ LƯỢNG', key: 'quantity', width: 15 },
-        { header: 'TRƯNG BÀY', key: 'displayStock', width: 15 },
-        { header: 'KHO', key: 'warehouseStock', width: 15 },
-        { header: 'GIÁ VỐN', key: 'cost', width: 15 },
-        { header: 'GIÁ BÁN', key: 'retailPrice', width: 15 },
-        { header: 'TỒN KHO CUỐI', key: 'endingStock', width: 15 },
-      ];
-
-      // Thêm dữ liệu
-      products.forEach((product, index) => {
-        worksheet.addRow({
-          stt: index + 1,
-          group: product.group,
-          sku: product.sku,
-          productName: product.productName,
-          quantity: product.quantity,
-          displayStock: product.displayStock,
-          warehouseStock: product.warehouseStock,
-          cost: product.cost,
-          retailPrice: product.retailPrice,
-          endingStock: product.endingStock
-        });
-      });
-
-      // Style header
-      worksheet.getRow(1).font = { bold: true };
-      worksheet.getRow(1).fill = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'FF4F46E5' }
-      };
-
-      // Set response headers
-      res.setHeader(
-        'Content-Type',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-      );
-      res.setHeader(
-        'Content-Disposition',
-        `attachment; filename=ton-kho-${new Date().toISOString().split('T')[0]}.xlsx`
-      );
-
-      // Write to response
-      await workbook.xlsx.write(res);
-      res.end();
-    } catch (error) {
-      console.error('Export error:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Lỗi khi export dữ liệu'
-      });
-    }
-  }
-
-  // GET /api/inventory/stats
-  async getStats(req, res) {
-    try {
-      const stats = await prisma.product.aggregate({
-        _sum: {
-          quantity: true,
-          displayStock: true,
-          warehouseStock: true,
-          newStock: true,
-          soldStock: true,
-          damagedStock: true,
-          endingStock: true
-        },
-        _count: { id: true }
-      });
-
-      // Tính giá trị tồn kho
-      const products = await prisma.product.findMany({
-        select: {
-          quantity: true,
-          cost: true,
-          endingStock: true
-        }
-      });
-
-      const totalValue = products.reduce(
-        (sum, p) => sum + (p.endingStock || 0) * (p.cost || 0), 
-        0
-      );
-
-      // Đếm sản phẩm tồn kho thấp
-      const lowStockCount = await prisma.product.count({
-        where: { endingStock: { lt: 50 } }
-      });
-
-      res.json({
-        success: true,
-        data: {
-          totalProducts: stats._count.id,
-          totalQuantity: stats._sum.quantity || 0,
-          totalEndingStock: stats._sum.endingStock || 0,
-          totalValue: Number(totalValue.toFixed(2)),
-          lowStockCount,
-          displayStock: stats._sum.displayStock || 0,
-          warehouseStock: stats._sum.warehouseStock || 0
-        }
-      });
-    } catch (error) {
-      console.error('Stats error:', error);
+      console.error('Batch create inventories error:', error);
       res.status(500).json({ 
-        success: false, 
-        error: 'Lỗi thống kê' 
+        error: 'Lỗi khi import dữ liệu',
+        details: error.message 
       });
     }
   }

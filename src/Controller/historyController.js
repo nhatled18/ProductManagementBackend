@@ -19,18 +19,16 @@ class HistoryController {
         where,
         include: {
           user: {
-            select: { 
-              username: true 
-            }
+            select: { username: true }
           },
           product: {
             select: {
-              productName: true,  // ✅ Sửa từ name -> productName
+              productName: true,
               sku: true
             }
           }
         },
-        orderBy: { timestamp: 'desc' },
+        orderBy: { createdAt: 'desc' },
         take: Number(limit),
         skip: Number(skip)
       });
@@ -39,10 +37,10 @@ class HistoryController {
         id: log.id,
         action: log.action,
         productId: log.productId,
-        productName: log.productName,
-        productSku: log.productSku,
+        productName: log.product?.productName || 'Sản phẩm đã bị xóa', // Sửa: an toàn
+        productSku: log.product?.sku || 'N/A',                    // Sửa: an toàn
         details: log.details,
-        timestamp: log.timestamp,
+        timestamp: log.createdAt,
         username: log.user?.username || 'System'
       }));
 
@@ -59,24 +57,25 @@ class HistoryController {
       const { userId } = req.params;
 
       const logs = await prisma.historyLog.findMany({
-        where: { 
-          userId: Number(userId) 
-        },
+        where: { userId: Number(userId) },
         include: {
-          user: {
-            select: { username: true }
-          },
+          user: { select: { username: true } },
           product: {
-            select: { 
-              productName: true,  // ✅ Sửa
-              sku: true 
-            }
+            select: { productName: true, sku: true }
           }
         },
-        orderBy: { timestamp: 'desc' }
+        orderBy: { createdAt: 'desc' }
       });
 
-      res.json(logs);
+      const formatted = logs.map(log => ({
+        ...log,
+        productName: log.product?.productName || 'Sản phẩm đã bị xóa', // Sửa
+        productSku: log.product?.sku || 'N/A',                        // Sửa
+        timestamp: log.createdAt,
+        username: log.user?.username || 'System'
+      }));
+
+      res.json(formatted);
     } catch (error) {
       console.error('Get history by user error:', error);
       res.status(500).json({ error: 'Lỗi khi lấy lịch sử theo user' });
@@ -89,18 +88,25 @@ class HistoryController {
       const { productId } = req.params;
 
       const logs = await prisma.historyLog.findMany({
-        where: { 
-          productId: Number(productId) 
-        },
+        where: { productId: Number(productId) },
         include: {
-          user: {
-            select: { username: true }
+          user: { select: { username: true } },
+          product: {
+            select: { productName: true, sku: true }
           }
         },
-        orderBy: { timestamp: 'desc' }
+        orderBy: { createdAt: 'desc' }
       });
 
-      res.json(logs);
+      const formatted = logs.map(log => ({
+        ...log,
+        productName: log.product?.productName || 'Sản phẩm đã bị xóa', // Sửa
+        productSku: log.product?.sku || 'N/A',                        // Sửa
+        timestamp: log.createdAt,
+        username: log.user?.username || 'System'
+      }));
+
+      res.json(formatted);
     } catch (error) {
       console.error('Get history by product error:', error);
       res.status(500).json({ error: 'Lỗi khi lấy lịch sử theo sản phẩm' });

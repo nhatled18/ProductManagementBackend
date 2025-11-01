@@ -1,99 +1,146 @@
+// This is your Prisma schema file
+
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "postgresql" // or "mysql", "sqlite"
   url      = env("DATABASE_URL")
 }
 
+// ========== USER MODEL ==========
 model User {
-  id        Int      @id @default(autoincrement())
-  username  String   @unique
-  email     String   @unique
-  password  String
-  fullName  String?  @map("full_name")
-  role      String   @default("user")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id           Int           @id @default(autoincrement())
+  username     String        @unique
+  password     String
+  fullName     String
+  email        String?       @unique
+  role         String        @default("user")
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
   
-  historyLogs  HistoryLog[]
-  transactions Transaction[]
-  
-  @@map("users")
+ transactions Transaction[]
+ historyLogs  HistoryLog[]
 }
 
+// ========== PRODUCT MODEL (Danh mục sản phẩm) ==========
 model Product {
-  id             Int      @id @default(autoincrement())
-  productName    String   @map("product_name")
-  sku            String   @unique
-  group          String?
-  quantity       Int      @default(0)
-  displayStock   Int      @default(0) @map("display_stock")
-  warehouseStock Int      @default(0) @map("warehouse_stock")
-  newStock       Int      @default(0) @map("new_stock")
-  soldStock      Int      @default(0) @map("sold_stock")
-  damagedStock   Int      @default(0) @map("damaged_stock")
-  endingStock    Int      @default(0) @map("ending_stock")
-  cost           Decimal  @default(0) @db.Decimal(12, 2)
-  retailPrice    Decimal  @default(0) @map("retail_price") @db.Decimal(12, 2)
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  id             Int           @id @default(autoincrement())
+  productName    String
+  sku            String        @unique
+  group          String        @default("")
   
-  // ✅ Cascade delete - Khi xóa product thì tự động xóa transactions & history logs
-  transactions Transaction[]
-  historyLogs  HistoryLog[]
+  // Fields from frontend
+  stockType1     String        @default("")
+  stockType2     String        @default("")
+  project        String        @default("")
+  unit           String        @default("")
+  note           String        @default("")
+  
+  // Pricing
+  cost           Float         @default(0)
+  retailPrice    Float         @default(0)
+  
+  // Timestamps
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  
+  // Relations
+  inventories    Inventory[]
+  transactions   Transaction[]
+  historyLogs    HistoryLog[]
   
   @@index([sku])
   @@index([group])
-  @@index([productName])
-  @@map("products")
 }
 
+// ========== INVENTORY MODEL (Tồn kho chi tiết) ==========
+model Inventory {
+  id             Int      @id @default(autoincrement())
+  productId      Int
+  
+  // Classification
+  stockType1     String   @default("")  // Phân loại kho
+  stockType2     String   @default("")  // Phân loại chi tiết
+  
+  // Pricing
+  retailPrice    Float    @default(0)
+  cost           Float    @default(0)
+  
+  // Stock tracking
+  initialStock   Int      @default(0)   // Tồn kho đầu
+  displayStock   Int      @default(0)   // Trưng bày
+  stockIn        Int      @default(0)   // Tổng nhập
+  stockOut       Int      @default(0)   // Tổng xuất
+  damaged        Int      @default(0)   // Hỏng/Lỗi
+  endingStock    Int      @default(0)   // Tồn kho cuối
+  
+  // Note
+  note           String   @default("")
+  
+  // Timestamps
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  
+  // Relations
+  product        Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  
+  @@index([productId])
+  @@index([stockType1])
+}
+
+// ========== TRANSACTION MODEL ==========
 model Transaction {
   id              Int      @id @default(autoincrement())
-  productId       Int      @map("product_id")
-  userId          Int?     @map("user_id")
-  type            String   // 'import' or 'export'
+  productId       Int
+  userId          Int?
+  
+  // Thông tin giao dịch
+  type            String   // "import" or "export"
+  transactionCode String   @default("")
+  summary         String   @default("")
+  
+  // Người tạo
+  createdBy       String   @default("")
+  
+  // Chi tiết sản phẩm
   quantity        Int
-  unitPrice       Decimal  @default(0) @map("unit_price") @db.Decimal(12, 2)  
-  transactionCode String   @default("") @map("transaction_code")               
-  summary         String   @default("")                                        
-  createdBy       String   @default("") @map("created_by")                     
-  reason          String   @default("")                                        
+  unitPrice       Float    @default(0)
+  
+  // Thông tin bổ sung
+  reason          String   @default("")
   note            String   @default("")
+  
+  // Thời gian
   date            DateTime @default(now())
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")                       
+  createdAt       DateTime @default(now())
   
+  // Relations
+  product         Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  user            User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
-  
+  // Indexes
   @@index([productId])
   @@index([type])
   @@index([date])
   @@index([transactionCode])
-  @@map("transactions")
 }
-
+// ========== HISTORY LOG MODEL ==========
 model HistoryLog {
   id          Int      @id @default(autoincrement())
-  action      String   // 'create_product', 'update_product', 'delete_product', 'import_transaction', 'export_transaction', 'delete_transaction'
-  productId   Int?     @map("product_id")
-  userId      Int?     @map("user_id")
-  productName String   @map("product_name")
-  productSku  String   @map("product_sku")
-  details     String?
-  timestamp   DateTime @default(now())
+  action      String   // "create", "update", "delete", "import", "export"
+  productId   Int?
+  userId      Int?
+  productName String
+  productSku  String
+  details     String   @default("")
+  createdAt   DateTime @default(now())
   
-  
-  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
-  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  product     Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   
   @@index([productId])
-  @@index([userId])
-  @@index([timestamp])
   @@index([action])
-  @@map("history_logs")
+  @@index([createdAt])
 }
