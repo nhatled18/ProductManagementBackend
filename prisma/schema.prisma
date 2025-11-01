@@ -11,11 +11,11 @@ model User {
   id        Int      @id @default(autoincrement())
   username  String   @unique
   password  String
-  fullName  String
+  fullName  String   @map("full_name")
   email     String?  @unique
   role      String   @default("user")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   transactions Transaction[]
   historyLogs  HistoryLog[]
@@ -35,8 +35,8 @@ model Product {
   note        String   @default("")
   cost        Float    @default(0)
   retailPrice Float    @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
 
   inventories  Inventory[]
   transactions Transaction[]
@@ -61,8 +61,8 @@ model Inventory {
   damaged      Int      @default(0)
   endingStock  Int      @default(0)
   note         String   @default("")
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
@@ -83,8 +83,8 @@ model Transaction {
   unitPrice       Float    @default(0)
   reason          String   @default("")
   note            String   @default("")
-  date            DateTime @default(now())
-  createdAt       DateTime @default(now())
+  date            DateTime @default(now()) @map("date")
+  createdAt       DateTime @default(now()) @map("created_at")
 
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
   user    User?   @relation(fields: [userId], references: [id])
@@ -104,7 +104,7 @@ model HistoryLog {
   productName String
   productSku  String
   details     String   @default("")
-  createdAt   DateTime @default(now())
+  createdAt   DateTime @default(now()) @map("created_at")
 
   product Product? @relation(fields: [productId], references: [id])
   user    User?    @relation(fields: [userId], references: [id])
