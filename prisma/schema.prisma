@@ -11,11 +11,11 @@ model User {
   id        Int      @id @default(autoincrement())
   username  String   @unique
   password  String
-  fullName  String   @map("full_name")
+  fullName  String
   email     String?  @unique
   role      String   @default("user")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   transactions Transaction[]
   historyLogs  HistoryLog[]
@@ -25,18 +25,18 @@ model User {
 
 model Product {
   id          Int      @id @default(autoincrement())
-  productName String   @map("product_name")
+  productName String
   sku         String   @unique
   group       String   @default("")
-  stockType1  String   @default("") @map("stock_type1")
-  stockType2  String   @default("") @map("stock_type2")
+  stockType1  String   @default("")
+  stockType2  String   @default("")
   project     String   @default("")
   unit        String   @default("")
   note        String   @default("")
   cost        Float    @default(0)
-  retailPrice Float    @default(0) @map("retail_price")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  retailPrice Float    @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   inventories  Inventory[]
   transactions Transaction[]
@@ -49,20 +49,20 @@ model Product {
 
 model Inventory {
   id           Int      @id @default(autoincrement())
-  productId    Int      @map("product_id")
-  stockType1   String   @default("") @map("stock_type1")
-  stockType2   String   @default("") @map("stock_type2")
-  retailPrice  Float    @default(0) @map("retail_price")
+  productId    Int
+  stockType1   String   @default("")
+  stockType2   String   @default("")
+  retailPrice  Float    @default(0)
   cost         Float    @default(0)
-  initialStock Int      @default(0) @map("initial_stock")
-  displayStock Int      @default(0) @map("display_stock")
-  stockIn      Int      @default(0) @map("stock_in")
-  stockOut     Int      @default(0) @map("stock_out")
+  initialStock Int      @default(0)
+  displayStock Int      @default(0)
+  stockIn      Int      @default(0)
+  stockOut     Int      @default(0)
   damaged      Int      @default(0)
-  endingStock  Int      @default(0) @map("ending_stock")
+  endingStock  Int      @default(0)
   note         String   @default("")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
@@ -73,18 +73,18 @@ model Inventory {
 
 model Transaction {
   id              Int      @id @default(autoincrement())
-  productId       Int      @map("product_id")
-  userId          Int?     @map("user_id")
+  productId       Int
+  userId          Int?
   type            String
-  transactionCode String   @default("") @map("transaction_code")
+  transactionCode String   @default("")
   summary         String   @default("")
-  createdBy       String   @default("") @map("created_by")
+  createdBy       String   @default("")
   quantity        Int
-  unitPrice       Float    @default(0) @map("unit_price")
+  unitPrice       Float    @default(0)
   reason          String   @default("")
   note            String   @default("")
   date            DateTime @default(now())
-  createdAt       DateTime @default(now()) @map("created_at")
+  createdAt       DateTime @default(now())
 
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
   user    User?   @relation(fields: [userId], references: [id])
@@ -99,12 +99,12 @@ model Transaction {
 model HistoryLog {
   id          Int      @id @default(autoincrement())
   action      String
-  productId   Int?     @map("product_id")
-  userId      Int?     @map("user_id")
-  productName String   @map("product_name")
-  productSku  String   @map("product_sku")
+  productId   Int?
+  userId      Int?
+  productName String
+  productSku  String
   details     String   @default("")
-  createdAt   DateTime @default(now()) @map("created_at")
+  createdAt   DateTime @default(now())
 
   product Product? @relation(fields: [productId], references: [id])
   user    User?    @relation(fields: [userId], references: [id])
