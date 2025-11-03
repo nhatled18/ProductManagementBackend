@@ -157,17 +157,21 @@ class ProductController {
 
       console.log('✅ Tạo thành công! Product ID:', product.id);
 
-      // Create history log
-      await prisma.historyLog.create({
-        data: {
-          action: 'create',
-          productId: product.id,
-          userId: req.user?.id || null,
-          productName: product.productName,
-          productSku: product.sku,
-          details: `Tạo sản phẩm mới: ${product.productName} (SKU: ${product.sku})`
-        }
-      });
+      // Create history log (không cần atomic, bỏ qua nếu fail)
+      try {
+        await prisma.historyLog.create({
+          data: {
+            action: 'create',
+            productId: product.id,
+            userId: req.user?.id || null,
+            productName: product.productName,
+            productSku: product.sku,
+            details: `Tạo sản phẩm mới: ${product.productName} (SKU: ${product.sku})`
+          }
+        });
+      } catch (logError) {
+        console.warn('⚠️ Lỗi ghi log (bỏ qua):', logError.message);
+      }
 
       res.status(201).json(product);
 
@@ -303,34 +307,38 @@ class ProductController {
 
       console.log('✅ Cập nhật thành công');
 
-      // 7. Ghi log thay đổi
-      const changeLabels = {
-        productName: 'tên sản phẩm',
-        sku: 'SKU',
-        group: 'nhóm',
-        stockType1: 'loại kho 1',
-        stockType2: 'loại kho 2',
-        project: 'dự án',
-        unit: 'đơn vị',
-        cost: 'giá vốn',
-        retailPrice: 'giá niêm yết',
-        note: 'ghi chú'
-      };
+      // 7. Ghi log thay đổi (không cần atomic)
+      try {
+        const changeLabels = {
+          productName: 'tên sản phẩm',
+          sku: 'SKU',
+          group: 'nhóm',
+          stockType1: 'loại kho 1',
+          stockType2: 'loại kho 2',
+          project: 'dự án',
+          unit: 'đơn vị',
+          cost: 'giá vốn',
+          retailPrice: 'giá niêm yết',
+          note: 'ghi chú'
+        };
 
-      const changedFields = Object.keys(updateData)
-        .filter(key => oldProduct[key] !== updateData[key])
-        .map(key => changeLabels[key] || key);
+        const changedFields = Object.keys(updateData)
+          .filter(key => oldProduct[key] !== updateData[key])
+          .map(key => changeLabels[key] || key);
 
-      await prisma.historyLog.create({
-        data: {
-          action: 'update',
-          productId: id,
-          userId: req.user?.id || null,
-          productName: product.productName,
-          productSku: product.sku,
-          details: `Cập nhật: ${changedFields.join(', ')}`
-        }
-      });
+        await prisma.historyLog.create({
+          data: {
+            action: 'update',
+            productId: id,
+            userId: req.user?.id || null,
+            productName: product.productName,
+            productSku: product.sku,
+            details: `Cập nhật: ${changedFields.join(', ')}`
+          }
+        });
+      } catch (logError) {
+        console.warn('⚠️ Lỗi ghi log (bỏ qua):', logError.message);
+      }
 
       res.json(product);
 
@@ -349,36 +357,36 @@ class ProductController {
   }
 
   // DELETE /api/products/:id
+  // ✅ FIXED: Không dùng transaction để tránh deadlock
   async deleteProduct(req, res) {
     try {
       const id = Number(req.params.id);
       console.log('🗑️ ===== XÓA SẢN PHẨM =====');
       console.log('🗑️ Product ID:', id);
 
-      // ✅ WRAP TOÀN BỘ TRONG TRANSACTION
-      const result = await prisma.$transaction(async (tx) => {
-        // 1. Tìm sản phẩm
-        const product = await tx.product.findUnique({
-          where: { id }
+      // 1. Tìm sản phẩm
+      const product = await prisma.product.findUnique({
+        where: { id }
+      });
+
+      if (!product) {
+        console.log('⚠️ Sản phẩm không tồn tại');
+        return res.json({
+          success: true,
+          message: 'Sản phẩm đã được xóa trước đó',
+          deletedProduct: { id }
         });
+      }
 
-        if (!product) {
-          console.log('⚠️ Sản phẩm không tồn tại');
-          return {
-            success: true,
-            message: 'Sản phẩm đã được xóa trước đó',
-            deletedProduct: { id }
-          };
-        }
+      console.log('📋 Sản phẩm tìm thấy:', {
+        id: product.id,
+        sku: product.sku,
+        productName: product.productName
+      });
 
-        console.log('📋 Sản phẩm tìm thấy:', {
-          id: product.id,
-          sku: product.sku,
-          productName: product.productName
-        });
-
-        // 2. Ghi log
-        await tx.historyLog.create({
+      // 2. Ghi log (không quan trọng nếu fail)
+      try {
+        await prisma.historyLog.create({
           data: {
             action: 'delete',
             productId: id,
@@ -388,35 +396,46 @@ class ProductController {
             details: `Xóa sản phẩm: ${product.productName} (SKU: ${product.sku})`
           }
         });
-
         console.log('📝 Đã ghi log');
+      } catch (logError) {
+        console.warn('⚠️ Lỗi ghi log (bỏ qua):', logError.message);
+      }
 
-        // 3. Xóa sản phẩm
-        await tx.product.delete({ where: { id } });
+      // 3. Xóa sản phẩm
+      await prisma.product.delete({ where: { id } });
 
-        console.log('✅ Đã xóa khỏi database');
-
-        return {
-          success: true,
-          message: 'Xóa sản phẩm thành công',
-          deletedProduct: {
-            id: product.id,
-            productName: product.productName,
-            sku: product.sku
-          }
-        };
-      }, {
-        isolationLevel: 'Serializable',
-        maxWait: 5000,
-        timeout: 10000
-      });
-
+      console.log('✅ Đã xóa khỏi database');
       console.log('✅ ===== XÓA HOÀN TẤT =====');
 
-      res.json(result);
+      res.json({
+        success: true,
+        message: 'Xóa sản phẩm thành công',
+        deletedProduct: {
+          id: product.id,
+          productName: product.productName,
+          sku: product.sku
+        }
+      });
 
     } catch (error) {
       console.error('❌ Delete product error:', error);
+      
+      // Xử lý lỗi 404 (record not found)
+      if (error.code === 'P2025') {
+        console.log('⚠️ Sản phẩm đã bị xóa');
+        return res.json({
+          success: true,
+          message: 'Sản phẩm đã được xóa trước đó'
+        });
+      }
+      
+      // Xử lý foreign key constraint
+      if (error.code === 'P2003') {
+        return res.status(400).json({ 
+          error: 'Không thể xóa sản phẩm vì đang có dữ liệu liên quan' 
+        });
+      }
+      
       res.status(500).json({ 
         error: 'Lỗi server khi xóa sản phẩm',
         details: error.message 
@@ -468,6 +487,7 @@ class ProductController {
       }
 
       // Create transaction and update product in one transaction
+      // ✅ Dùng ReadCommitted thay vì Serializable
       const result = await prisma.$transaction(async (tx) => {
         const transaction = await tx.transaction.create({
           data: {
@@ -503,6 +523,10 @@ class ProductController {
         });
 
         return { transaction, updatedProduct };
+      }, {
+        isolationLevel: 'ReadCommitted',
+        maxWait: 10000,
+        timeout: 15000
       });
 
       console.log('✅ Giao dịch thành công');
@@ -510,6 +534,15 @@ class ProductController {
       res.status(201).json(result);
     } catch (error) {
       console.error('❌ Create transaction error:', error);
+      
+      // Xử lý deadlock
+      if (error.code === 'P2034') {
+        return res.status(409).json({ 
+          error: 'Database đang bận, vui lòng thử lại',
+          code: 'DEADLOCK'
+        });
+      }
+      
       res.status(400).json({ 
         error: 'Lỗi khi tạo giao dịch',
         details: error.message 
