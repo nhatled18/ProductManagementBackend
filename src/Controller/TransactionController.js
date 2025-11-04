@@ -770,9 +770,13 @@ class TransactionController {
   }
 
   // POST /api/transactions/import-excel
+// POST /api/transactions/import-excel
 async importExcel(req, res) {
   try {
     console.log('📥 Import Excel called');
+    const { expectedType } = req.query;
+    console.log('📌 Expected Type từ frontend:', expectedType);
+    
     if (!req.file) {
       return res.status(400).json({
         success: false,
@@ -783,6 +787,7 @@ async importExcel(req, res) {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(req.file.path);
     const worksheet = workbook.worksheets[0];
+    
     if (!worksheet) {
       return res.status(400).json({
         success: false,
@@ -790,37 +795,105 @@ async importExcel(req, res) {
       });
     }
 
-    // 🧠 Xác định loại phiếu dựa vào header row
-    const headerRow = worksheet.getRow(1).values.map(v => (v || '').toString().trim().toUpperCase());
-    console.log('Header Row:', headerRow);
+    // ✅ Fix: Đọc header đúng cách
+    const headerRowValues = worksheet.getRow(1).values;
+    const headerRow = headerRowValues
+      .slice(1) // Bỏ phần tử đầu tiên (undefined)
+      .map(v => (v || '').toString().trim().toUpperCase())
+      .filter(v => v); // Bỏ các giá trị rỗng
 
-    let detectedType = 'import'; // mặc định
-    if (headerRow.some(h => h.includes('MÃ PHIẾU XUẤT'))) detectedType = 'export';
-    if (headerRow.some(h => h.includes('MÃ PHIẾU NHẬP'))) detectedType = 'import';
+    console.log('Header Row:', headerRow);
+    console.log('Raw Header Values:', headerRowValues);
+
+    // ✅ Kiểm tra file có dữ liệu không
+    if (headerRow.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'File Excel không có header hoặc header trống'
+      });
+    }
+
+    // 🧠 Xác định loại phiếu
+    let detectedType = 'import';
+    const headerString = headerRow.join(' ');
+    
+    if (headerString.includes('MÃ PHIẾU XUẤT') || 
+        headerString.includes('PHIẾU XUẤT') ||
+        headerString.includes('LÝ DO')) {
+      detectedType = 'export';
+    } else if (headerString.includes('MÃ PHIẾU NHẬP') || 
+               headerString.includes('PHIẾU NHẬP')) {
+      detectedType = 'import';
+    }
 
     console.log('📌 Loại phiếu tự nhận:', detectedType);
+    console.log('📋 Header string:', headerString);
 
     const results = { success: [], failed: [] };
     const rows = [];
 
+    // ✅ Đọc rows từ row 2 trở đi
     worksheet.eachRow((row, rowNumber) => {
-      if (rowNumber > 1) rows.push(row.values);
+      if (rowNumber > 1) {
+        rows.push(row.values);
+      }
     });
+
+    console.log(`📊 Tổng số rows data: ${rows.length}`);
+
+    if (rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'File Excel không có dữ liệu (chỉ có header)'
+      });
+    }
+
+    // Helper functions
+    const toString = (value) => {
+      if (value === null || value === undefined) return '';
+      return String(value).trim();
+    };
+
+    const parseDate = (value) => {
+      if (!value) return new Date();
+      
+      if (value instanceof Date && !isNaN(value)) {
+        return value;
+      }
+      
+      if (typeof value === 'string') {
+        const parsed = new Date(value);
+        return isNaN(parsed) ? new Date() : parsed;
+      }
+      
+      if (typeof value === 'number') {
+        const parsed = new Date((value - 25569) * 86400 * 1000);
+        return isNaN(parsed) ? new Date() : parsed;
+      }
+      
+      return new Date();
+    };
 
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       try {
+        // Mapping cột Excel (ExcelJS array bắt đầu từ index 1)
         const dateValue = row[1];
-        const transactionCode = row[2] || '';
-        const summary = row[3] || '';
-        const createdBy = row[4] || req.user?.username || 'System';
-        const sku = row[5] || '';
-        const productName = row[6] || '';
+        const transactionCode = toString(row[2]);
+        const summary = toString(row[3]);
+        const createdBy = toString(row[4]) || req.user?.username || 'System';
+        const sku = toString(row[5]);
+        const productName = toString(row[6]);
         const quantity = Number(row[7]) || 0;
         const unitPrice = Number(row[8]) || 0;
-        const reason = detectedType === 'export' ? (row[9] || '') : '';
-        const note = detectedType === 'import' ? (row[10] || '') : '';
+        
+        // Reason & Note theo loại phiếu
+        const reason = detectedType === 'export' ? toString(row[9]) : '';
+        const note = toString(row[detectedType === 'export' ? 10 : 9]);
 
+        console.log(`Row ${i + 2}: ${productName} - ${quantity} - Type: ${detectedType}`);
+
+        // Validation
         if (!productName || !quantity) {
           results.failed.push({
             row: i + 2,
@@ -830,13 +903,7 @@ async importExcel(req, res) {
           continue;
         }
 
-        let parsedDate = new Date();
-        if (dateValue) {
-          if (dateValue instanceof Date) parsedDate = dateValue;
-          else if (typeof dateValue === 'string') parsedDate = new Date(dateValue);
-          else if (typeof dateValue === 'number') parsedDate = new Date((dateValue - 25569) * 86400 * 1000);
-        }
-
+        const parsedDate = parseDate(dateValue);
         const product = await this.findOrCreateProduct(productName, sku);
 
         const transaction = await prisma.$transaction(async (tx) => {
@@ -879,6 +946,7 @@ async importExcel(req, res) {
         });
 
       } catch (error) {
+        console.error(`❌ Error at row ${i + 2}:`, error.message);
         results.failed.push({
           row: i + 2,
           data: row,
@@ -887,8 +955,11 @@ async importExcel(req, res) {
       }
     }
 
+    // Cleanup file
     const fs = await import('fs');
-    if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    if (fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
 
     res.json({
       success: true,
@@ -903,10 +974,13 @@ async importExcel(req, res) {
     });
 
   } catch (error) {
-    console.error('Import Excel error:', error);
+    console.error('❌ Import Excel error:', error);
+    
     if (req.file) {
       const fs = await import('fs');
-      if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      if (fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
     }
 
     res.status(500).json({
