@@ -214,7 +214,7 @@ class TransactionController {
         type
       } = req.body;
 
-      // ✅ Validation
+      // Validation
       if (!productName || !quantity || !type) {
         return res.status(400).json({
           success: false,
@@ -229,10 +229,8 @@ class TransactionController {
         });
       }
 
-      // ✅ Tìm hoặc tạo product
       const product = await this.findOrCreateProduct(productName, sku);
 
-      // Tạo transaction
       const result = await prisma.$transaction(async (tx) => {
         const transaction = await tx.transaction.create({
           data: {
@@ -313,7 +311,6 @@ class TransactionController {
 
       for (const txData of transactions) {
         try {
-          // ✅ Validation
           if (!txData.productName || !txData.quantity || !txData.type) {
             results.failed.push({
               data: txData,
@@ -322,7 +319,6 @@ class TransactionController {
             continue;
           }
 
-          // ✅ Tìm hoặc tạo product
           const product = await this.findOrCreateProduct(txData.productName, txData.sku);
 
           const result = await prisma.$transaction(async (tx) => {
@@ -392,7 +388,6 @@ class TransactionController {
         });
       }
 
-      // Nếu thay đổi productName → tìm/tạo product mới
       let newProductId = transaction.productId;
       if (updateData.productName && updateData.productName !== transaction.product.productName) {
         const newProduct = await this.findOrCreateProduct(updateData.productName, updateData.sku);
@@ -769,226 +764,330 @@ class TransactionController {
     }
   }
 
-  // POST /api/transactions/import-excel
-// POST /api/transactions/import-excel
-async importExcel(req, res) {
-  try {
-    console.log('📥 Import Excel called');
-    const { expectedType } = req.query;
-    console.log('📌 Expected Type từ frontend:', expectedType);
-    
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        error: 'Không có file được upload'
-      });
-    }
-
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.readFile(req.file.path);
-    const worksheet = workbook.worksheets[0];
-    
-    if (!worksheet) {
-      return res.status(400).json({
-        success: false,
-        error: 'File Excel không có dữ liệu'
-      });
-    }
-
-    // ✅ Fix: Đọc header đúng cách
-    const headerRowValues = worksheet.getRow(1).values;
-    const headerRow = headerRowValues
-      .slice(1) // Bỏ phần tử đầu tiên (undefined)
-      .map(v => (v || '').toString().trim().toUpperCase())
-      .filter(v => v); // Bỏ các giá trị rỗng
-
-    console.log('Header Row:', headerRow);
-    console.log('Raw Header Values:', headerRowValues);
-
-    // ✅ Kiểm tra file có dữ liệu không
-    if (headerRow.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'File Excel không có header hoặc header trống'
-      });
-    }
-
-    // 🧠 Xác định loại phiếu
-    let detectedType = 'import';
-    const headerString = headerRow.join(' ');
-    
-    if (headerString.includes('MÃ PHIẾU XUẤT') || 
-        headerString.includes('PHIẾU XUẤT') ||
-        headerString.includes('LÝ DO')) {
-      detectedType = 'export';
-    } else if (headerString.includes('MÃ PHIẾU NHẬP') || 
-               headerString.includes('PHIẾU NHẬP')) {
-      detectedType = 'import';
-    }
-
-    console.log('📌 Loại phiếu tự nhận:', detectedType);
-    console.log('📋 Header string:', headerString);
-
-    const results = { success: [], failed: [] };
-    const rows = [];
-
-    // ✅ Đọc rows từ row 2 trở đi
-    worksheet.eachRow((row, rowNumber) => {
-      if (rowNumber > 1) {
-        rows.push(row.values);
-      }
-    });
-
-    console.log(`📊 Tổng số rows data: ${rows.length}`);
-
-    if (rows.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'File Excel không có dữ liệu (chỉ có header)'
-      });
-    }
-
-    // Helper functions
-    const toString = (value) => {
-      if (value === null || value === undefined) return '';
-      return String(value).trim();
-    };
-
-    const parseDate = (value) => {
-      if (!value) return new Date();
+  // 🎯 POST /api/transactions/import-excel - FIXED VERSION
+  async importExcel(req, res) {
+    try {
+      console.log('📥 Import Excel called');
+      const expectedType = req.body.type || 'import';
+      console.log('📌 Expected Type từ frontend:', expectedType);
       
-      if (value instanceof Date && !isNaN(value)) {
-        return value;
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          error: 'Không có file được upload'
+        });
       }
-      
-      if (typeof value === 'string') {
-        const parsed = new Date(value);
-        return isNaN(parsed) ? new Date() : parsed;
-      }
-      
-      if (typeof value === 'number') {
-        const parsed = new Date((value - 25569) * 86400 * 1000);
-        return isNaN(parsed) ? new Date() : parsed;
-      }
-      
-      return new Date();
-    };
 
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      try {
-        // Mapping cột Excel (ExcelJS array bắt đầu từ index 1)
-        const dateValue = row[1];
-        const transactionCode = toString(row[2]);
-        const summary = toString(row[3]);
-        const createdBy = toString(row[4]) || req.user?.username || 'System';
-        const sku = toString(row[5]);
-        const productName = toString(row[6]);
-        const quantity = Number(row[7]) || 0;
-        const unitPrice = Number(row[8]) || 0;
+      console.log('📁 File info:', {
+        filename: req.file.originalname,
+        size: req.file.size,
+        mimetype: req.file.mimetype,
+        path: req.file.path
+      });
+
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.readFile(req.file.path);
+      const worksheet = workbook.worksheets[0];
+      
+      if (!worksheet) {
+        return res.status(400).json({
+          success: false,
+          error: 'File Excel không có dữ liệu'
+        });
+      }
+
+      // ✅ Đọc header row
+      const headerRowValues = worksheet.getRow(1).values;
+      const headerRow = headerRowValues
+        .slice(1) // Bỏ phần tử đầu tiên (undefined)
+        .map(v => (v || '').toString().trim().toUpperCase())
+        .filter(v => v); // Bỏ các giá trị rỗng
+
+      console.log('📋 Header Row:', headerRow);
+      console.log('📋 Raw Header Values:', headerRowValues);
+
+      if (headerRow.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'File Excel không có header hoặc header trống'
+        });
+      }
+
+      // 🧠 Xác định loại phiếu từ header
+      let detectedType = 'import';
+      const headerString = headerRow.join(' ');
+      
+      // ✅ Ưu tiên phát hiện export trước (vì có LÝ DO XUẤT đặc trưng)
+      if (headerString.includes('LÝ DO XUẤT') || 
+          headerString.includes('LY DO XUAT') ||
+          headerString.includes('PHIẾU XUẤT') ||
+          headerString.includes('PHIEU XUAT') ||
+          headerString.includes('MÃ PHIẾU XUẤT')) {
+        detectedType = 'export';
+      } else if (headerString.includes('NGUỒN NHẬP') || 
+                 headerString.includes('NGUON NHAP') ||
+                 headerString.includes('PHIẾU NHẬP') ||
+                 headerString.includes('PHIEU NHAP') ||
+                 headerString.includes('MÃ PHIẾU NHẬP')) {
+        detectedType = 'import';
+      }
+
+      console.log('📌 Detected type:', detectedType);
+      console.log('📋 Header string:', headerString);
+
+      // ✅ Xác định vị trí các cột động dựa vào header
+      const colIndexes = {};
+      headerRow.forEach((header, index) => {
+        const col = index + 1; // ExcelJS array bắt đầu từ 1
         
-        // Reason & Note theo loại phiếu
-        const reason = detectedType === 'export' ? toString(row[9]) : '';
-        const note = toString(row[detectedType === 'export' ? 10 : 9]);
+        if (header.includes('NGÀY') || header.includes('NGAY')) {
+          colIndexes.date = col;
+        } else if (header.includes('MÃ PHIẾU') || header.includes('MA PHIEU')) {
+          colIndexes.transactionCode = col;
+        } else if (header.includes('TÓM TẮT') || header.includes('TOM TAT')) {
+          colIndexes.summary = col;
+        } else if (header.includes('NGƯỜI LẬP') || header.includes('NGUOI LAP')) {
+          colIndexes.createdBy = col;
+        } else if (header === 'SKU') {
+          colIndexes.sku = col;
+        } else if (header.includes('TÊN SẢN PHẨM') || header.includes('TEN SAN PHAM')) {
+          colIndexes.productName = col;
+        } else if (header === 'SL' || header.includes('SỐ LƯỢNG') || header.includes('SO LUONG')) {
+          colIndexes.quantity = col;
+        } else if (header.includes('ĐƠN GIÁ') || header.includes('DON GIA')) {
+          colIndexes.unitPrice = col;
+        } else if (header.includes('THÀNH TIỀN') || header.includes('THANH TIEN')) {
+          colIndexes.totalPrice = col; // Bỏ qua, chỉ để tham khảo
+        } else if (header.includes('LÝ DO XUẤT') || 
+                   header.includes('LY DO XUAT') || 
+                   header.includes('LÝ DO') ||
+                   header.includes('LY DO') ||
+                   header.includes('NGUỒN NHẬP') || 
+                   header.includes('NGUON NHAP') ||
+                   header.includes('NGUỒN') ||
+                   header.includes('NGUON')) {
+          colIndexes.reason = col;
+        } else if (header.includes('GHI CHÚ') || header.includes('GHI CHU')) {
+          colIndexes.note = col;
+        }
+      });
 
-        console.log(`Row ${i + 2}: ${productName} - ${quantity} - Type: ${detectedType}`);
+      console.log('📍 Column indexes:', colIndexes);
+      console.log('📍 Column indexes detail:', {
+        date: colIndexes.date,
+        productName: colIndexes.productName,
+        quantity: colIndexes.quantity,
+        note: colIndexes.note,
+        reason: colIndexes.reason
+      });
 
-        // Validation
-        if (!productName || !quantity) {
+      // ✅ Validation: Kiểm tra các cột bắt buộc
+      const requiredCols = ['productName', 'quantity'];
+      const missingCols = requiredCols.filter(col => !colIndexes[col]);
+      
+      if (missingCols.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: `File Excel thiếu cột bắt buộc: ${missingCols.join(', ')}`
+        });
+      }
+
+      const results = { success: [], failed: [] };
+      const rows = [];
+
+      // ✅ Đọc rows từ row 2 trở đi
+      worksheet.eachRow((row, rowNumber) => {
+        if (rowNumber > 1) {
+          rows.push(row.values);
+        }
+      });
+
+      console.log(`📊 Total rows data: ${rows.length}`);
+
+      if (rows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'File Excel không có dữ liệu (chỉ có header)',
+          data: {
+            successCount: 0,
+            failedCount: 0,
+            detectedType
+          }
+        });
+      }
+
+      // Helper functions
+      const toString = (value) => {
+        if (value === null || value === undefined) return '';
+        return String(value).trim();
+      };
+
+      const parseDate = (value) => {
+        if (!value) return new Date();
+        
+        if (value instanceof Date && !isNaN(value)) {
+          return value;
+        }
+        
+        if (typeof value === 'string') {
+          const parsed = new Date(value);
+          return isNaN(parsed) ? new Date() : parsed;
+        }
+        
+        if (typeof value === 'number') {
+          // Excel date number format
+          const parsed = new Date((value - 25569) * 86400 * 1000);
+          return isNaN(parsed) ? new Date() : parsed;
+        }
+        
+        return new Date();
+      };
+
+      // ✅ Process rows với column mapping động
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        console.log(`\n🔍 Processing row ${i + 2}:`, row.slice(0, 12)); // Log raw row data
+        
+        try {
+          // Lấy giá trị từ các cột đã map
+          const dateValue = row[colIndexes.date];
+          const transactionCode = toString(row[colIndexes.transactionCode]);
+          const summary = toString(row[colIndexes.summary]);
+          const createdBy = toString(row[colIndexes.createdBy]) || req.user?.username || 'System';
+          const sku = toString(row[colIndexes.sku]);
+          const productName = toString(row[colIndexes.productName]);
+          const quantity = Number(row[colIndexes.quantity]) || 0;
+          const unitPrice = Number(row[colIndexes.unitPrice]) || 0;
+          const reason = toString(row[colIndexes.reason] || '');
+          const note = toString(row[colIndexes.note] || '');
+
+          console.log(`Row ${i + 2}: ${productName} | Qty: ${quantity} | Price: ${unitPrice} | Type: ${detectedType}`);
+
+          // Validation
+          if (!productName) {
+            results.failed.push({
+              row: i + 2,
+              data: { productName, quantity, sku },
+              error: 'Thiếu tên sản phẩm'
+            });
+            continue;
+          }
+
+          if (!quantity || quantity <= 0) {
+            results.failed.push({
+              row: i + 2,
+              data: { productName, quantity, sku },
+              error: 'Số lượng không hợp lệ hoặc bằng 0'
+            });
+            continue;
+          }
+
+          const parsedDate = parseDate(dateValue);
+          
+          // Tìm hoặc tạo product
+          const product = await this.findOrCreateProduct(productName, sku);
+
+          // Tạo transaction
+          const transaction = await prisma.$transaction(async (tx) => {
+            const newTransaction = await tx.transaction.create({
+              data: {
+                date: parsedDate,
+                transactionCode,
+                summary,
+                createdBy,
+                productId: product.id,
+                userId: req.user?.id || null,
+                quantity,
+                unitPrice,
+                reason,
+                note,
+                type: detectedType
+              }
+            });
+
+            // Log history
+            await tx.historyLog.create({
+              data: {
+                action: `${detectedType}_transaction`,
+                productId: product.id,
+                userId: req.user?.id || null,
+                productName: product.productName,
+                productSku: product.sku,
+                details: `Import Excel: ${detectedType === 'import' ? 'Nhập' : 'Xuất'} ${quantity} ${product.productName}. ${note || ''}`
+              }
+            });
+
+            return newTransaction;
+          });
+
+          results.success.push({
+            row: i + 2,
+            transactionId: transaction.id,
+            productName: product.productName,
+            sku: product.sku,
+            quantity,
+            unitPrice,
+            type: detectedType
+          });
+
+        } catch (error) {
+          console.error(`❌ Error at row ${i + 2}:`, error.message);
           results.failed.push({
             row: i + 2,
-            data: { productName, quantity },
-            error: 'Thiếu tên sản phẩm hoặc số lượng'
+            data: {
+              productName: toString(row[colIndexes.productName]),
+              sku: toString(row[colIndexes.sku]),
+              quantity: row[colIndexes.quantity]
+            },
+            error: error.message
           });
-          continue;
         }
-
-        const parsedDate = parseDate(dateValue);
-        const product = await this.findOrCreateProduct(productName, sku);
-
-        const transaction = await prisma.$transaction(async (tx) => {
-          const newTransaction = await tx.transaction.create({
-            data: {
-              date: parsedDate,
-              transactionCode,
-              summary,
-              createdBy,
-              productId: product.id,
-              userId: req.user?.id || null,
-              quantity,
-              unitPrice,
-              reason,
-              note,
-              type: detectedType
-            }
-          });
-
-          await tx.historyLog.create({
-            data: {
-              action: `${detectedType}_transaction`,
-              productId: product.id,
-              userId: req.user?.id || null,
-              productName: product.productName,
-              productSku: product.sku,
-              details: `Import Excel: ${detectedType === 'import' ? 'Nhập' : 'Xuất'} ${quantity} ${product.productName}`
-            }
-          });
-
-          return newTransaction;
-        });
-
-        results.success.push({
-          row: i + 2,
-          transactionId: transaction.id,
-          productName: product.productName,
-          quantity,
-          type: detectedType
-        });
-
-      } catch (error) {
-        console.error(`❌ Error at row ${i + 2}:`, error.message);
-        results.failed.push({
-          row: i + 2,
-          data: row,
-          error: error.message
-        });
       }
-    }
 
-    // Cleanup file
-    const fs = await import('fs');
-    if (fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
-
-    res.json({
-      success: true,
-      message: `Import hoàn tất: ${results.success.length} thành công, ${results.failed.length} thất bại`,
-      data: {
-        successCount: results.success.length,
-        failedCount: results.failed.length,
-        successItems: results.success,
-        failedItems: results.failed,
-        detectedType
-      }
-    });
-
-  } catch (error) {
-    console.error('❌ Import Excel error:', error);
-    
-    if (req.file) {
+      // Cleanup uploaded file
       const fs = await import('fs');
       if (fs.existsSync(req.file.path)) {
         fs.unlinkSync(req.file.path);
+        console.log('🗑️ Cleaned up temp file');
       }
-    }
 
-    res.status(500).json({
-      success: false,
-      error: 'Lỗi khi import Excel: ' + error.message
-    });
+      console.log(`✅ Import completed: ${results.success.length} success, ${results.failed.length} failed`);
+
+      res.json({
+        success: true,
+        message: `Import hoàn tất: ${results.success.length} thành công, ${results.failed.length} thất bại`,
+        data: {
+          successCount: results.success.length,
+          failedCount: results.failed.length,
+          successItems: results.success.slice(0, 10), // Chỉ trả về 10 items đầu
+          failedItems: results.failed.slice(0, 10), // Chỉ trả về 10 lỗi đầu
+          detectedType,
+          totalRows: rows.length,
+          columnMapping: colIndexes
+        }
+      });
+
+    } catch (error) {
+      console.error('❌ Import Excel error:', error);
+      console.error('Stack trace:', error.stack);
+      
+      // Cleanup file on error
+      if (req.file) {
+        const fs = await import('fs');
+        if (fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
+      }
+
+      res.status(500).json({
+        success: false,
+        error: 'Lỗi khi import Excel: ' + error.message,
+        details: error.stack
+      });
+    }
   }
-}
+
+
 }
 
 export default new TransactionController();
