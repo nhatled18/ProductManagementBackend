@@ -5,12 +5,121 @@ const prisma = new PrismaClient();
 
 class TransactionController {
   
-  // GET /api/transactions
+  // 🔥 THÊM MỚI: GET /api/transactions/type/:type - Lấy TẤT CẢ theo type
+  async getByType(req, res) {
+    try {
+      const { type } = req.params;
+      const { 
+        search,
+        group,
+        startDate, 
+        endDate 
+      } = req.query;
+
+      console.log('🔍 getByType called with:', { type, search, group, startDate, endDate });
+
+      // Validate type
+      if (!['import', 'export'].includes(type)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Type phải là "import" hoặc "export"'
+        });
+      }
+
+      // Build where clause
+      const where = { type };
+
+      if (startDate || endDate) {
+        where.date = {};
+        if (startDate) where.date.gte = new Date(startDate);
+        if (endDate) where.date.lte = new Date(endDate);
+      }
+
+      // ✅ LẤY TẤT CẢ - KHÔNG GIỚI HẠN
+      const transactions = await prisma.transaction.findMany({
+        where,
+        include: {
+          product: {
+            select: { 
+              id: true,
+              productName: true,
+              sku: true,
+              group: true
+            }
+          },
+          user: {
+            select: {
+              id: true,
+              username: true
+            }
+          }
+        },
+        orderBy: [
+          { date: 'desc' },
+          { createdAt: 'desc' }
+        ]
+        // ⚠️ KHÔNG CÓ take/skip - LẤY TẤT CẢ!
+      });
+
+      console.log(`✅ Found ${transactions.length} transactions of type "${type}"`);
+
+      // Format data
+      const formatted = transactions.map(t => ({
+        id: t.id,
+        date: t.date.toISOString().split('T')[0],
+        transactionCode: t.transactionCode || '',
+        summary: t.summary || '',
+        createdBy: t.user?.username || t.createdBy || 'System',
+        sku: t.product.sku,
+        productName: t.product.productName,
+        group: t.product.group,
+        quantity: t.quantity,
+        unitPrice: t.unitPrice || 0,
+        reason: t.reason || '',
+        note: t.note || '',
+        type: t.type,
+        createdAt: t.createdAt
+      }));
+
+      // Client-side filtering (nếu cần)
+      let filtered = formatted;
+      
+      if (search) {
+        const searchLower = search.toLowerCase();
+        filtered = filtered.filter(t => 
+          t.sku?.toLowerCase().includes(searchLower) ||
+          t.productName?.toLowerCase().includes(searchLower) ||
+          t.transactionCode?.toLowerCase().includes(searchLower)
+        );
+      }
+
+      if (group && group !== 'all') {
+        filtered = filtered.filter(t => t.group === group);
+      }
+
+      console.log(`📊 After filtering: ${filtered.length} transactions`);
+
+      res.json({
+        success: true,
+        data: filtered,
+        total: filtered.length,
+        type: type
+      });
+    } catch (error) {
+      console.error('❌ Get by type error:', error);
+      res.status(500).json({ 
+        success: false,
+        error: 'Lỗi khi lấy giao dịch theo loại: ' + error.message
+      });
+    }
+  }
+
+  // 🔧 SỬA: GET /api/transactions - Cho phép không giới hạn
   async getAll(req, res) {
     try {
       const { 
         page = 1, 
-        limit = 50, 
+        limit, // ✅ KHÔNG MẶC ĐỊNH NỮA
         type, 
         productId, 
         startDate, 
@@ -19,7 +128,13 @@ class TransactionController {
         group 
       } = req.query;
 
-      const skip = (page - 1) * limit;
+      // ✅ Chỉ apply pagination nếu có limit
+      const shouldPaginate = limit && limit !== 'undefined' && limit !== 'null';
+      const parsedLimit = shouldPaginate ? Number(limit) : null;
+      const skip = shouldPaginate ? (Number(page) - 1) * parsedLimit : 0;
+
+      console.log('🔍 getAll params:', { page, limit: parsedLimit, shouldPaginate, type });
+
       const where = {};
 
       if (type) where.type = type;
@@ -31,31 +146,43 @@ class TransactionController {
         if (endDate) where.date.lte = new Date(endDate);
       }
 
-      const [transactions, total] = await Promise.all([
-        prisma.transaction.findMany({
-          where,
-          include: {
-            product: {
-              select: { 
-                id: true,
-                productName: true,
-                sku: true,
-                group: true
-              }
-            },
-            user: {
-              select: {
-                id: true,
-                username: true
-              }
+      // Query với hoặc không pagination
+      const queryOptions = {
+        where,
+        include: {
+          product: {
+            select: { 
+              id: true,
+              productName: true,
+              sku: true,
+              group: true
             }
           },
-          orderBy: { date: 'desc' },
-          take: Number(limit),
-          skip: Number(skip)
-        }),
+          user: {
+            select: {
+              id: true,
+              username: true
+            }
+          }
+        },
+        orderBy: [
+          { date: 'desc' },
+          { createdAt: 'desc' }
+        ]
+      };
+
+      // Chỉ thêm pagination nếu cần
+      if (shouldPaginate) {
+        queryOptions.take = parsedLimit;
+        queryOptions.skip = skip;
+      }
+
+      const [transactions, total] = await Promise.all([
+        prisma.transaction.findMany(queryOptions),
         prisma.transaction.count({ where })
       ]);
+
+      console.log(`✅ Found ${transactions.length} transactions (total: ${total})`);
 
       const formatted = transactions.map(t => ({
         id: t.id,
@@ -88,16 +215,24 @@ class TransactionController {
         filtered = filtered.filter(t => t.group === group);
       }
 
-      res.json({
+      // Response format
+      const response = {
         success: true,
         data: filtered,
-        pagination: {
+        total: total
+      };
+
+      // Chỉ thêm pagination info nếu có pagination
+      if (shouldPaginate) {
+        response.pagination = {
           page: Number(page),
-          limit: Number(limit),
+          limit: parsedLimit,
           total,
-          totalPages: Math.ceil(total / limit)
-        }
-      });
+          totalPages: Math.ceil(total / parsedLimit)
+        };
+      }
+
+      res.json(response);
     } catch (error) {
       console.error('Get transactions error:', error);
       res.status(500).json({ 
@@ -764,7 +899,7 @@ class TransactionController {
     }
   }
 
-  // 🎯 POST /api/transactions/import-excel - FIXED VERSION
+  // POST /api/transactions/import-excel
   async importExcel(req, res) {
     try {
       console.log('📥 Import Excel called');
@@ -796,15 +931,14 @@ class TransactionController {
         });
       }
 
-      // ✅ Đọc header row
+      // Đọc header row
       const headerRowValues = worksheet.getRow(1).values;
       const headerRow = headerRowValues
-        .slice(1) // Bỏ phần tử đầu tiên (undefined)
+        .slice(1)
         .map(v => (v || '').toString().trim().toUpperCase())
-        .filter(v => v); // Bỏ các giá trị rỗng
+        .filter(v => v);
 
       console.log('📋 Header Row:', headerRow);
-      console.log('📋 Raw Header Values:', headerRowValues);
 
       if (headerRow.length === 0) {
         return res.status(400).json({
@@ -813,11 +947,10 @@ class TransactionController {
         });
       }
 
-      // 🧠 Xác định loại phiếu từ header
+      // Xác định loại phiếu từ header
       let detectedType = 'import';
       const headerString = headerRow.join(' ');
       
-      // ✅ Ưu tiên phát hiện export trước (vì có LÝ DO XUẤT đặc trưng)
       if (headerString.includes('LÝ DO XUẤT') || 
           headerString.includes('LY DO XUAT') ||
           headerString.includes('PHIẾU XUẤT') ||
@@ -833,12 +966,11 @@ class TransactionController {
       }
 
       console.log('📌 Detected type:', detectedType);
-      console.log('📋 Header string:', headerString);
 
-      // ✅ Xác định vị trí các cột động dựa vào header
+      // Xác định vị trí các cột động
       const colIndexes = {};
       headerRow.forEach((header, index) => {
-        const col = index + 1; // ExcelJS array bắt đầu từ 1
+        const col = index + 1;
         
         if (header.includes('NGÀY') || header.includes('NGAY')) {
           colIndexes.date = col;
@@ -857,7 +989,7 @@ class TransactionController {
         } else if (header.includes('ĐƠN GIÁ') || header.includes('DON GIA')) {
           colIndexes.unitPrice = col;
         } else if (header.includes('THÀNH TIỀN') || header.includes('THANH TIEN')) {
-          colIndexes.totalPrice = col; // Bỏ qua, chỉ để tham khảo
+          colIndexes.totalPrice = col;
         } else if (header.includes('LÝ DO XUẤT') || 
                    header.includes('LY DO XUAT') || 
                    header.includes('LÝ DO') ||
@@ -873,15 +1005,8 @@ class TransactionController {
       });
 
       console.log('📍 Column indexes:', colIndexes);
-      console.log('📍 Column indexes detail:', {
-        date: colIndexes.date,
-        productName: colIndexes.productName,
-        quantity: colIndexes.quantity,
-        note: colIndexes.note,
-        reason: colIndexes.reason
-      });
 
-      // ✅ Validation: Kiểm tra các cột bắt buộc
+      // Validation: Kiểm tra cột bắt buộc
       const requiredCols = ['productName', 'quantity'];
       const missingCols = requiredCols.filter(col => !colIndexes[col]);
       
@@ -895,7 +1020,7 @@ class TransactionController {
       const results = { success: [], failed: [] };
       const rows = [];
 
-      // ✅ Đọc rows từ row 2 trở đi
+      // Đọc rows từ row 2 trở đi
       worksheet.eachRow((row, rowNumber) => {
         if (rowNumber > 1) {
           rows.push(row.values);
@@ -935,7 +1060,6 @@ class TransactionController {
         }
         
         if (typeof value === 'number') {
-          // Excel date number format
           const parsed = new Date((value - 25569) * 86400 * 1000);
           return isNaN(parsed) ? new Date() : parsed;
         }
@@ -943,13 +1067,11 @@ class TransactionController {
         return new Date();
       };
 
-      // ✅ Process rows với column mapping động
+      // Process rows
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i];
-        console.log(`\n🔍 Processing row ${i + 2}:`, row.slice(0, 12)); // Log raw row data
         
         try {
-          // Lấy giá trị từ các cột đã map
           const dateValue = row[colIndexes.date];
           const transactionCode = toString(row[colIndexes.transactionCode]);
           const summary = toString(row[colIndexes.summary]);
@@ -961,7 +1083,7 @@ class TransactionController {
           const reason = toString(row[colIndexes.reason] || '');
           const note = toString(row[colIndexes.note] || '');
 
-          console.log(`Row ${i + 2}: ${productName} | Qty: ${quantity} | Price: ${unitPrice} | Type: ${detectedType}`);
+          console.log(`Row ${i + 2}: ${productName} | Qty: ${quantity} | Type: ${detectedType}`);
 
           // Validation
           if (!productName) {
@@ -1059,8 +1181,8 @@ class TransactionController {
         data: {
           successCount: results.success.length,
           failedCount: results.failed.length,
-          successItems: results.success.slice(0, 10), // Chỉ trả về 10 items đầu
-          failedItems: results.failed.slice(0, 10), // Chỉ trả về 10 lỗi đầu
+          successItems: results.success.slice(0, 10),
+          failedItems: results.failed.slice(0, 10),
           detectedType,
           totalRows: rows.length,
           columnMapping: colIndexes
@@ -1086,8 +1208,6 @@ class TransactionController {
       });
     }
   }
-
-
 }
 
 export default new TransactionController();

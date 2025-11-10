@@ -8,16 +8,13 @@ import TransactionController from '../Controller/TransactionController.js';
 
 const router = Router();
 
-// ✅ Xác định upload directory dựa trên môi trường
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// QUAN TRỌNG: Dùng /tmp trên Vercel (production)
 const uploadDir = process.env.NODE_ENV === 'production' 
-  ? '/tmp/uploads'  // ✅ Vercel chỉ cho phép ghi vào /tmp
-  : path.join(__dirname, '../../uploads'); // Local development
+  ? '/tmp/uploads'
+  : path.join(__dirname, '../../uploads');
 
-// Tạo folder nếu chưa tồn tại
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
@@ -47,7 +44,7 @@ const upload = multer({
   }
 });
 
-// ========== POST ROUTES (SPECIFIC) ==========
+// ========== POST ROUTES (SPECIFIC FIRST) ==========
 router.post('/import-excel', 
   upload.single('file'),
   (req, res) => TransactionController.importExcel(req, res)
@@ -61,7 +58,7 @@ router.post('/delete-many',
   (req, res) => TransactionController.deleteMany(req, res)
 );
 
-// ========== GET ROUTES (SPECIFIC) ==========
+// ========== GET ROUTES (SPECIFIC FIRST) ==========
 router.get('/stats', 
   (req, res) => TransactionController.getStats(req, res)
 );
@@ -70,11 +67,16 @@ router.get('/export',
   (req, res) => TransactionController.exportTransactions(req, res)
 );
 
+// 🔥 THÊM ROUTE MỚI - Lấy theo type (KHÔNG GIỚI HẠN)
+router.get('/type/:type', 
+  (req, res) => TransactionController.getByType(req, res)
+);
+
 router.get('/product/:productId', 
   (req, res) => TransactionController.getByProduct(req, res)
 );
 
-// ========== GENERAL ROUTES (SAU CÙNG) ==========
+// ========== GENERAL ROUTES (LAST) ==========
 router.get('/', 
   (req, res) => TransactionController.getAll(req, res)
 );
