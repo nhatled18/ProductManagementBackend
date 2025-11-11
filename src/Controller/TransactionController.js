@@ -1,7 +1,8 @@
 import { PrismaClient } from '@prisma/client';
 import ExcelJS from 'exceljs';
 import fs from 'fs';
-import path from 'path';
+
+const prisma = new PrismaClient();
 
 class TransactionController {
   
@@ -9,14 +10,7 @@ class TransactionController {
   async getByType(req, res) {
     try {
       const { type } = req.params;
-      const { 
-        search,
-        group,
-        startDate, 
-        endDate 
-      } = req.query;
-
-      console.log('🔍 getByType called with:', { type, search, group, startDate, endDate });
+      const { search, group, startDate, endDate } = req.query;
 
       if (!['import', 'export'].includes(type)) {
         return res.status(400).json({
@@ -57,8 +51,6 @@ class TransactionController {
         ]
       });
 
-      console.log(`✅ Found ${transactions.length} transactions of type "${type}"`);
-
       const formatted = transactions.map(t => ({
         id: t.id,
         date: t.date.toISOString().split('T')[0],
@@ -91,8 +83,6 @@ class TransactionController {
         filtered = filtered.filter(t => t.group === group);
       }
 
-      console.log(`📊 After filtering: ${filtered.length} transactions`);
-
       res.json({
         success: true,
         data: filtered,
@@ -124,8 +114,6 @@ class TransactionController {
       const shouldPaginate = limit && limit !== 'undefined' && limit !== 'null';
       const parsedLimit = shouldPaginate ? Number(limit) : null;
       const skip = shouldPaginate ? (Number(page) - 1) * parsedLimit : 0;
-
-      console.log('🔍 getAll params:', { page, limit: parsedLimit, shouldPaginate, type });
 
       const where = {};
 
@@ -171,8 +159,6 @@ class TransactionController {
         prisma.transaction.findMany(queryOptions),
         prisma.transaction.count({ where })
       ]);
-
-      console.log(`✅ Found ${transactions.length} transactions (total: ${total})`);
 
       const formatted = transactions.map(t => ({
         id: t.id,
@@ -309,7 +295,6 @@ class TransactionController {
           group: 'Chưa phân loại'
         }
       });
-      console.log('✅ Auto-created product:', product.id, product.productName);
     }
 
     return product;
@@ -408,7 +393,6 @@ class TransactionController {
     }
   }
 
-  // ✅ FIX 2: Batch processing tối ưu cho Vercel
   async createBatch(req, res) {
     try {
       const { transactions } = req.body;
@@ -420,15 +404,8 @@ class TransactionController {
         });
       }
 
-      console.log(`📦 Processing batch of ${transactions.length} transactions`);
-
-      const results = {
-        success: [],
-        failed: []
-      };
-
-      // ✅ Process với Promise.all để tăng tốc (nhưng vẫn an toàn)
-      const CONCURRENT_BATCH = 10; // Xử lý 10 items cùng lúc
+      const results = { success: [], failed: [] };
+      const CONCURRENT_BATCH = 10;
       
       for (let i = 0; i < transactions.length; i += CONCURRENT_BATCH) {
         const batch = transactions.slice(i, i + CONCURRENT_BATCH);
@@ -467,7 +444,6 @@ class TransactionController {
 
             return { success: true, result };
           } catch (error) {
-            console.error('Error processing transaction:', error);
             return {
               success: false,
               data: txData,
@@ -485,8 +461,6 @@ class TransactionController {
             results.failed.push({ data: item.data, error: item.error });
           }
         });
-
-        console.log(`✅ Batch ${Math.floor(i / CONCURRENT_BATCH) + 1} completed`);
       }
 
       res.json({
@@ -634,7 +608,6 @@ class TransactionController {
     }
   }
 
-  // ✅ FIX 3: Limit batch size và optimize delete
   async deleteMany(req, res) {
     try {
       const { ids } = req.body;
@@ -646,30 +619,24 @@ class TransactionController {
         });
       }
 
-      // ✅ Giới hạn để tránh timeout
       const MAX_DELETE = 100;
       if (ids.length > MAX_DELETE) {
         return res.status(400).json({
           success: false,
-          error: `Chỉ có thể xóa tối đa ${MAX_DELETE} items mỗi lần. Hiện tại: ${ids.length}. Vui lòng chia nhỏ batch.`
+          error: `Chỉ có thể xóa tối đa ${MAX_DELETE} items mỗi lần`
         });
       }
-
-      console.log(`🗑️ Deleting ${ids.length} transactions`);
 
       const transactions = await prisma.transaction.findMany({
         where: { id: { in: ids.map(id => Number(id)) } },
         include: { product: true }
       });
 
-      // ✅ Delete trong một transaction
       await prisma.$transaction(async (tx) => {
-        // Delete all at once
         await tx.transaction.deleteMany({
           where: { id: { in: ids.map(id => Number(id)) } }
         });
 
-        // Log history (có thể bỏ nếu quá nhiều để tránh timeout)
         if (transactions.length <= 50) {
           for (const transaction of transactions) {
             await tx.historyLog.create({
@@ -913,12 +880,12 @@ class TransactionController {
     }
   }
 
-  // ✅ FIX 4: Import Excel tối ưu cho Vercel với Promise.all
+  // ✅ ULTRA-OPTIMIZED IMPORT - Tối ưu tối đa cho Vercel
   async importExcel(req, res) {
+    const startTime = Date.now();
+    
     try {
-      console.log('📥 Import Excel called');
-      const expectedType = req.body.type || 'import';
-      console.log('📌 Expected Type từ frontend:', expectedType);
+      console.log('📥 Import started');
       
       if (!req.file) {
         return res.status(400).json({
@@ -927,365 +894,233 @@ class TransactionController {
         });
       }
 
-      console.log('📁 File info:', {
-        filename: req.file.originalname,
-        size: req.file.size,
-        mimetype: req.file.mimetype,
-        path: req.file.path
-      });
-
-      // ✅ Kiểm tra file tồn tại
       if (!fs.existsSync(req.file.path)) {
         return res.status(400).json({
           success: false,
-          error: 'File không tồn tại trên server. Path: ' + req.file.path
+          error: 'File không tồn tại'
         });
       }
 
+      // ⚡ Read Excel
       const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.readFile(req.file.path);
       
-      try {
-        await workbook.xlsx.readFile(req.file.path);
-      } catch (readError) {
-        console.error('❌ Error reading Excel file:', readError);
-        // Cleanup
-        if (fs.existsSync(req.file.path)) {
-          fs.unlinkSync(req.file.path);
-        }
-        return res.status(400).json({
-          success: false,
-          error: 'Không thể đọc file Excel: ' + readError.message
-        });
-      }
-
       const worksheet = workbook.worksheets[0];
-      
       if (!worksheet) {
-        if (fs.existsSync(req.file.path)) {
-          fs.unlinkSync(req.file.path);
-        }
+        fs.unlinkSync(req.file.path);
         return res.status(400).json({
           success: false,
-          error: 'File Excel không có dữ liệu'
+          error: 'File không có dữ liệu'
         });
       }
 
-      // Đọc header row
-      const headerRowValues = worksheet.getRow(1).values;
-      const headerRow = headerRowValues
+      // ⚡ Parse header
+      const headerRow = worksheet.getRow(1).values
         .slice(1)
         .map(v => (v || '').toString().trim().toUpperCase())
         .filter(v => v);
 
-      console.log('📋 Header Row:', headerRow);
-
       if (headerRow.length === 0) {
-        if (fs.existsSync(req.file.path)) {
-          fs.unlinkSync(req.file.path);
-        }
+        fs.unlinkSync(req.file.path);
         return res.status(400).json({
           success: false,
-          error: 'File Excel không có header hoặc header trống'
+          error: 'File không có header'
         });
       }
 
-      // Xác định loại phiếu từ header
-      let detectedType = 'import';
+      // ⚡ Detect type
       const headerString = headerRow.join(' ');
-      
-      if (headerString.includes('LÝ DO XUẤT') || 
-          headerString.includes('LY DO XUAT') ||
-          headerString.includes('PHIẾU XUẤT') ||
-          headerString.includes('PHIEU XUAT') ||
-          headerString.includes('MÃ PHIẾU XUẤT')) {
-        detectedType = 'export';
-      } else if (headerString.includes('NGUỒN NHẬP') || 
-                 headerString.includes('NGUON NHAP') ||
-                 headerString.includes('PHIẾU NHẬP') ||
-                 headerString.includes('PHIEU NHAP') ||
-                 headerString.includes('MÃ PHIẾU NHẬP')) {
-        detectedType = 'import';
-      }
+      const detectedType = (
+        headerString.includes('LÝ DO XUẤT') || 
+        headerString.includes('PHIẾU XUẤT')
+      ) ? 'export' : 'import';
 
-      console.log('📌 Detected type:', detectedType);
-
-      // Xác định vị trí các cột động
-      const colIndexes = {};
-      headerRow.forEach((header, index) => {
-        const col = index + 1;
-        
-        if (header.includes('NGÀY') || header.includes('NGAY')) {
-          colIndexes.date = col;
-        } else if (header.includes('MÃ PHIẾU') || header.includes('MA PHIEU')) {
-          colIndexes.transactionCode = col;
-        } else if (header.includes('TÓM TẮT') || header.includes('TOM TAT')) {
-          colIndexes.summary = col;
-        } else if (header.includes('NGƯỜI LẬP') || header.includes('NGUOI LAP')) {
-          colIndexes.createdBy = col;
-        } else if (header === 'SKU') {
-          colIndexes.sku = col;
-        } else if (header.includes('TÊN SẢN PHẨM') || header.includes('TEN SAN PHAM')) {
-          colIndexes.productName = col;
-        } else if (header === 'SL' || header.includes('SỐ LƯỢNG') || header.includes('SO LUONG')) {
-          colIndexes.quantity = col;
-        } else if (header.includes('ĐƠN GIÁ') || header.includes('DON GIA')) {
-          colIndexes.unitPrice = col;
-        } else if (header.includes('THÀNH TIỀN') || header.includes('THANH TIEN')) {
-          colIndexes.totalPrice = col;
-        } else if (header.includes('LÝ DO XUẤT') || 
-                   header.includes('LY DO XUAT') || 
-                   header.includes('LÝ DO') ||
-                   header.includes('LY DO') ||
-                   header.includes('NGUỒN NHẬP') || 
-                   header.includes('NGUON NHAP') ||
-                   header.includes('NGUỒN') ||
-                   header.includes('NGUON')) {
-          colIndexes.reason = col;
-        } else if (header.includes('GHI CHÚ') || header.includes('GHI CHU')) {
-          colIndexes.note = col;
-        }
+      // ⚡ Map columns
+      const cols = {};
+      headerRow.forEach((h, i) => {
+        const col = i + 1;
+        if (h.includes('NGÀY')) cols.date = col;
+        else if (h.includes('MÃ PHIẾU')) cols.transactionCode = col;
+        else if (h.includes('TÓM TẮT')) cols.summary = col;
+        else if (h.includes('NGƯỜI LẬP')) cols.createdBy = col;
+        else if (h === 'SKU') cols.sku = col;
+        else if (h.includes('TÊN SẢN PHẨM')) cols.productName = col;
+        else if (h.includes('SỐ LƯỢNG') || h === 'SL') cols.quantity = col;
+        else if (h.includes('ĐƠN GIÁ')) cols.unitPrice = col;
+        else if (h.includes('LÝ DO') || h.includes('NGUỒN')) cols.reason = col;
+        else if (h.includes('GHI CHÚ')) cols.note = col;
       });
 
-      console.log('📍 Column indexes:', colIndexes);
-
-      // Validation: Kiểm tra cột bắt buộc
-      const requiredCols = ['productName', 'quantity'];
-      const missingCols = requiredCols.filter(col => !colIndexes[col]);
-      
-      if (missingCols.length > 0) {
-        if (fs.existsSync(req.file.path)) {
-          fs.unlinkSync(req.file.path);
-        }
+      // ⚡ Validate
+      if (!cols.productName || !cols.quantity) {
+        fs.unlinkSync(req.file.path);
         return res.status(400).json({
           success: false,
-          error: `File Excel thiếu cột bắt buộc: ${missingCols.join(', ')}`
+          error: 'Thiếu cột bắt buộc'
         });
       }
 
-      const results = { success: [], failed: [] };
+      // ⚡ Read rows (skip header)
       const rows = [];
-
-      // Đọc rows từ row 2 trở đi
       worksheet.eachRow((row, rowNumber) => {
-        if (rowNumber > 1) {
-          rows.push(row.values);
-        }
+        if (rowNumber > 1) rows.push(row.values);
       });
-
-      console.log(`📊 Total rows data: ${rows.length}`);
 
       if (rows.length === 0) {
-        if (fs.existsSync(req.file.path)) {
-          fs.unlinkSync(req.file.path);
-        }
+        fs.unlinkSync(req.file.path);
         return res.status(400).json({
           success: false,
-          error: 'File Excel không có dữ liệu (chỉ có header)',
-          data: {
-            successCount: 0,
-            failedCount: 0,
-            detectedType
-          }
+          error: 'Không có dữ liệu'
         });
       }
 
-      // Helper functions
-      const toString = (value) => {
-        if (value === null || value === undefined) return '';
-        return String(value).trim();
-      };
+      console.log(`📊 ${rows.length} rows detected`);
 
-      const parseDate = (value) => {
-        if (!value) return new Date();
-        
-        if (value instanceof Date && !isNaN(value)) {
-          return value;
+      // ⚡ Helpers
+      const str = (v) => v ? String(v).trim() : '';
+      const parseDate = (v) => {
+        if (!v) return new Date();
+        if (v instanceof Date && !isNaN(v)) return v;
+        if (typeof v === 'string') {
+          const d = new Date(v);
+          return isNaN(d) ? new Date() : d;
         }
-        
-        if (typeof value === 'string') {
-          const parsed = new Date(value);
-          return isNaN(parsed) ? new Date() : parsed;
+        if (typeof v === 'number') {
+          const d = new Date((v - 25569) * 86400 * 1000);
+          return isNaN(d) ? new Date() : d;
         }
-        
-        if (typeof value === 'number') {
-          const parsed = new Date((value - 25569) * 86400 * 1000);
-          return isNaN(parsed) ? new Date() : parsed;
-        }
-        
         return new Date();
       };
 
-      // ✅ CRITICAL FIX: Process rows với batch và Promise.all
-      const BATCH_SIZE = 20; // Tối ưu cho Vercel
-      const batches = [];
-      
-      for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-        batches.push(rows.slice(i, i + BATCH_SIZE));
-      }
+      // ⚡ ULTRA FAST PROCESSING
+      const MAX_TIME = 55000; // 55s buffer
+      const BATCH_SIZE = 20; // Optimal for Vercel
+      const results = { success: [], failed: [] };
+      let processed = 0;
+      let stopped = false;
 
-      console.log(`📦 Processing ${batches.length} batches of ${BATCH_SIZE} items each`);
+      // Cache products để tránh query lại
+      const productCache = new Map();
 
-      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-        const batch = batches[batchIndex];
-        console.log(`🔄 Processing batch ${batchIndex + 1}/${batches.length}...`);
+      for (let i = 0; i < rows.length && !stopped; i += BATCH_SIZE) {
+        const elapsed = Date.now() - startTime;
+        
+        if (elapsed > MAX_TIME) {
+          console.log(`⏰ Timeout at ${elapsed}ms, processed ${processed}/${rows.length}`);
+          stopped = true;
+          break;
+        }
 
-        // Process batch items in parallel
-        const batchPromises = batch.map(async (row, localIndex) => {
-          const globalIndex = batchIndex * BATCH_SIZE + localIndex;
-          
+        const batch = rows.slice(i, i + BATCH_SIZE);
+        
+        const promises = batch.map(async (row, idx) => {
           try {
-            const dateValue = row[colIndexes.date];
-            const transactionCode = toString(row[colIndexes.transactionCode]);
-            const summary = toString(row[colIndexes.summary]);
-            const createdBy = toString(row[colIndexes.createdBy]) || req.user?.username || 'System';
-            const sku = toString(row[colIndexes.sku]);
-            const productName = toString(row[colIndexes.productName]);
-            const quantity = Number(row[colIndexes.quantity]) || 0;
-            const unitPrice = Number(row[colIndexes.unitPrice]) || 0;
-            const reason = toString(row[colIndexes.reason] || '');
-            const note = toString(row[colIndexes.note] || '');
+            const productName = str(row[cols.productName]);
+            const quantity = Number(row[cols.quantity]) || 0;
 
-            // Validation
-            if (!productName) {
+            if (!productName || quantity <= 0) {
               return {
-                success: false,
-                row: globalIndex + 2,
-                data: { productName, quantity, sku },
-                error: 'Thiếu tên sản phẩm'
+                ok: false,
+                row: i + idx + 2,
+                error: 'Thiếu tên sản phẩm hoặc số lượng'
               };
             }
 
-            if (!quantity || quantity <= 0) {
-              return {
-                success: false,
-                row: globalIndex + 2,
-                data: { productName, quantity, sku },
-                error: 'Số lượng không hợp lệ hoặc bằng 0'
-              };
-            }
-
-            const parsedDate = parseDate(dateValue);
+            const sku = str(row[cols.sku]);
+            const cacheKey = sku || productName;
             
-            // Tìm hoặc tạo product
-            const product = await this.findOrCreateProduct(productName, sku);
+            // Get from cache or find/create
+            let product = productCache.get(cacheKey);
+            if (!product) {
+              product = await this.findOrCreateProduct(productName, sku);
+              productCache.set(cacheKey, product);
+            }
 
-            // Tạo transaction
-            const transaction = await prisma.$transaction(async (tx) => {
-              const newTransaction = await tx.transaction.create({
-                data: {
-                  date: parsedDate,
-                  transactionCode,
-                  summary,
-                  createdBy,
-                  productId: product.id,
-                  userId: req.user?.id || null,
-                  quantity,
-                  unitPrice,
-                  reason,
-                  note,
-                  type: detectedType
-                }
-              });
-
-              // Log history
-              await tx.historyLog.create({
-                data: {
-                  action: `${detectedType}_transaction`,
-                  productId: product.id,
-                  userId: req.user?.id || null,
-                  productName: product.productName,
-                  productSku: product.sku,
-                  details: `Import Excel: ${detectedType === 'import' ? 'Nhập' : 'Xuất'} ${quantity} ${product.productName}. ${note || ''}`
-                }
-              });
-
-              return newTransaction;
+            // Create transaction (NO nested $transaction for speed)
+            const tx = await prisma.transaction.create({
+              data: {
+                date: parseDate(row[cols.date]),
+                transactionCode: str(row[cols.transactionCode]),
+                summary: str(row[cols.summary]),
+                createdBy: str(row[cols.createdBy]) || req.user?.username || 'System',
+                productId: product.id,
+                userId: req.user?.id || null,
+                quantity,
+                unitPrice: Number(row[cols.unitPrice]) || 0,
+                reason: str(row[cols.reason]),
+                note: str(row[cols.note]),
+                type: detectedType
+              }
             });
 
-            return {
-              success: true,
-              row: globalIndex + 2,
-              transactionId: transaction.id,
-              productName: product.productName,
-              sku: product.sku,
-              quantity,
-              unitPrice,
-              type: detectedType
-            };
-
-          } catch (error) {
-            console.error(`❌ Error at row ${globalIndex + 2}:`, error.message);
-            return {
-              success: false,
-              row: globalIndex + 2,
+            // Fire-and-forget history log
+            prisma.historyLog.create({
               data: {
-                productName: toString(row[colIndexes.productName]),
-                sku: toString(row[colIndexes.sku]),
-                quantity: row[colIndexes.quantity]
-              },
+                action: `${detectedType}_transaction`,
+                productId: product.id,
+                userId: req.user?.id || null,
+                productName: product.productName,
+                productSku: product.sku,
+                details: `Import: ${detectedType === 'import' ? 'Nhập' : 'Xuất'} ${quantity}`
+              }
+            }).catch(() => {});
+
+            return { ok: true, id: tx.id };
+          } catch (error) {
+            return {
+              ok: false,
+              row: i + idx + 2,
               error: error.message
             };
           }
         });
 
-        // Wait for batch to complete
-        const batchResults = await Promise.all(batchPromises);
+        const batchResults = await Promise.all(promises);
         
-        // Collect results
-        batchResults.forEach(result => {
-          if (result.success) {
-            results.success.push(result);
+        batchResults.forEach(r => {
+          if (r.ok) {
+            results.success.push(r);
           } else {
-            results.failed.push({
-              row: result.row,
-              data: result.data,
-              error: result.error
-            });
+            results.failed.push({ row: r.row, error: r.error });
           }
         });
 
-        console.log(`✅ Batch ${batchIndex + 1} completed`);
+        processed += batch.length;
       }
 
-      // Cleanup uploaded file
-      if (fs.existsSync(req.file.path)) {
-        fs.unlinkSync(req.file.path);
-        console.log('🗑️ Cleaned up temp file');
-      }
+      // Cleanup
+      fs.unlinkSync(req.file.path);
 
-      console.log(`✅ Import completed: ${results.success.length} success, ${results.failed.length} failed`);
+      const time = Date.now() - startTime;
+      console.log(`✅ Done in ${time}ms`);
 
       res.json({
         success: true,
-        message: `Import hoàn tất: ${results.success.length} thành công, ${results.failed.length} thất bại`,
+        message: stopped 
+          ? `⚠️ Import từng phần: ${results.success.length}/${rows.length} (timeout)`
+          : `✅ Import: ${results.success.length} thành công, ${results.failed.length} thất bại`,
         data: {
           successCount: results.success.length,
           failedCount: results.failed.length,
-          successItems: results.success.slice(0, 10),
-          failedItems: results.failed.slice(0, 10),
-          detectedType,
           totalRows: rows.length,
-          columnMapping: colIndexes,
-          batchInfo: {
-            totalBatches: batches.length,
-            batchSize: BATCH_SIZE
-          }
+          processedRows: processed,
+          wasPartial: stopped,
+          detectedType,
+          processingTime: time,
+          failedItems: results.failed.slice(0, 20)
         }
       });
 
     } catch (error) {
-      console.error('❌ Import Excel error:', error);
-      console.error('Stack trace:', error.stack);
+      console.error('❌ Import error:', error);
       
-      // Cleanup file on error
       if (req.file && fs.existsSync(req.file.path)) {
         fs.unlinkSync(req.file.path);
       }
 
       res.status(500).json({
         success: false,
-        error: 'Lỗi khi import Excel: ' + error.message,
-        details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        error: 'Lỗi import: ' + error.message
       });
     }
   }
