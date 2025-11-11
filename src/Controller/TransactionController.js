@@ -1,11 +1,11 @@
 import { PrismaClient } from '@prisma/client';
 import ExcelJS from 'exceljs';
-
-const prisma = new PrismaClient();
+import fs from 'fs';
+import path from 'path';
 
 class TransactionController {
   
-  // 🔥 THÊM MỚI: GET /api/transactions/type/:type - Lấy TẤT CẢ theo type
+  // 🔥 GET /api/transactions/type/:type
   async getByType(req, res) {
     try {
       const { type } = req.params;
@@ -18,7 +18,6 @@ class TransactionController {
 
       console.log('🔍 getByType called with:', { type, search, group, startDate, endDate });
 
-      // Validate type
       if (!['import', 'export'].includes(type)) {
         return res.status(400).json({
           success: false,
@@ -26,7 +25,6 @@ class TransactionController {
         });
       }
 
-      // Build where clause
       const where = { type };
 
       if (startDate || endDate) {
@@ -35,7 +33,6 @@ class TransactionController {
         if (endDate) where.date.lte = new Date(endDate);
       }
 
-      // ✅ LẤY TẤT CẢ - KHÔNG GIỚI HẠN
       const transactions = await prisma.transaction.findMany({
         where,
         include: {
@@ -58,12 +55,10 @@ class TransactionController {
           { date: 'desc' },
           { createdAt: 'desc' }
         ]
-        // ⚠️ KHÔNG CÓ take/skip - LẤY TẤT CẢ!
       });
 
       console.log(`✅ Found ${transactions.length} transactions of type "${type}"`);
 
-      // Format data
       const formatted = transactions.map(t => ({
         id: t.id,
         date: t.date.toISOString().split('T')[0],
@@ -81,7 +76,6 @@ class TransactionController {
         createdAt: t.createdAt
       }));
 
-      // Client-side filtering (nếu cần)
       let filtered = formatted;
       
       if (search) {
@@ -114,12 +108,11 @@ class TransactionController {
     }
   }
 
-  // 🔧 SỬA: GET /api/transactions - Cho phép không giới hạn
   async getAll(req, res) {
     try {
       const { 
         page = 1, 
-        limit, // ✅ KHÔNG MẶC ĐỊNH NỮA
+        limit,
         type, 
         productId, 
         startDate, 
@@ -128,7 +121,6 @@ class TransactionController {
         group 
       } = req.query;
 
-      // ✅ Chỉ apply pagination nếu có limit
       const shouldPaginate = limit && limit !== 'undefined' && limit !== 'null';
       const parsedLimit = shouldPaginate ? Number(limit) : null;
       const skip = shouldPaginate ? (Number(page) - 1) * parsedLimit : 0;
@@ -146,7 +138,6 @@ class TransactionController {
         if (endDate) where.date.lte = new Date(endDate);
       }
 
-      // Query với hoặc không pagination
       const queryOptions = {
         where,
         include: {
@@ -171,7 +162,6 @@ class TransactionController {
         ]
       };
 
-      // Chỉ thêm pagination nếu cần
       if (shouldPaginate) {
         queryOptions.take = parsedLimit;
         queryOptions.skip = skip;
@@ -215,14 +205,12 @@ class TransactionController {
         filtered = filtered.filter(t => t.group === group);
       }
 
-      // Response format
       const response = {
         success: true,
         data: filtered,
         total: total
       };
 
-      // Chỉ thêm pagination info nếu có pagination
       if (shouldPaginate) {
         response.pagination = {
           page: Number(page),
@@ -242,7 +230,6 @@ class TransactionController {
     }
   }
 
-  // GET /api/transactions/:id
   async getById(req, res) {
     try {
       const { id } = req.params;
@@ -299,25 +286,21 @@ class TransactionController {
     }
   }
 
-  // Helper: Tìm hoặc tạo product
   async findOrCreateProduct(productName, sku = null) {
     let product = null;
 
-    // 1. Tìm theo SKU nếu có
     if (sku) {
       product = await prisma.product.findFirst({
         where: { sku: sku }
       });
     }
 
-    // 2. Tìm theo tên sản phẩm nếu chưa tìm thấy
     if (!product) {
       product = await prisma.product.findFirst({
         where: { productName: productName }
       });
     }
 
-    // 3. Tạo mới nếu không tìm thấy
     if (!product) {
       product = await prisma.product.create({
         data: {
@@ -332,7 +315,6 @@ class TransactionController {
     return product;
   }
 
-  // POST /api/transactions
   async create(req, res) {
     try {
       const {
@@ -349,7 +331,6 @@ class TransactionController {
         type
       } = req.body;
 
-      // Validation
       if (!productName || !quantity || !type) {
         return res.status(400).json({
           success: false,
@@ -427,7 +408,7 @@ class TransactionController {
     }
   }
 
-  // POST /api/transactions/batch
+  // ✅ FIX 2: Batch processing tối ưu cho Vercel
   async createBatch(req, res) {
     try {
       const { transactions } = req.body;
@@ -439,51 +420,73 @@ class TransactionController {
         });
       }
 
+      console.log(`📦 Processing batch of ${transactions.length} transactions`);
+
       const results = {
         success: [],
         failed: []
       };
 
-      for (const txData of transactions) {
-        try {
-          if (!txData.productName || !txData.quantity || !txData.type) {
-            results.failed.push({
+      // ✅ Process với Promise.all để tăng tốc (nhưng vẫn an toàn)
+      const CONCURRENT_BATCH = 10; // Xử lý 10 items cùng lúc
+      
+      for (let i = 0; i < transactions.length; i += CONCURRENT_BATCH) {
+        const batch = transactions.slice(i, i + CONCURRENT_BATCH);
+        
+        const batchPromises = batch.map(async (txData) => {
+          try {
+            if (!txData.productName || !txData.quantity || !txData.type) {
+              return {
+                success: false,
+                data: txData,
+                error: 'Thiếu productName, quantity hoặc type'
+              };
+            }
+
+            const product = await this.findOrCreateProduct(txData.productName, txData.sku);
+
+            const result = await prisma.$transaction(async (tx) => {
+              const transaction = await tx.transaction.create({
+                data: {
+                  date: txData.date ? new Date(txData.date) : new Date(),
+                  transactionCode: txData.transactionCode || '',
+                  summary: txData.summary || '',
+                  createdBy: txData.createdBy || req.user?.username || 'System',
+                  productId: product.id,
+                  userId: req.user?.id || null,
+                  quantity: Number(txData.quantity),
+                  unitPrice: Number(txData.unitPrice) || 0,
+                  reason: txData.reason || '',
+                  note: txData.note || '',
+                  type: txData.type
+                }
+              });
+
+              return transaction;
+            });
+
+            return { success: true, result };
+          } catch (error) {
+            console.error('Error processing transaction:', error);
+            return {
+              success: false,
               data: txData,
-              error: 'Thiếu productName, quantity hoặc type'
-            });
-            continue;
+              error: error.message
+            };
           }
+        });
 
-          const product = await this.findOrCreateProduct(txData.productName, txData.sku);
+        const batchResults = await Promise.all(batchPromises);
+        
+        batchResults.forEach(item => {
+          if (item.success) {
+            results.success.push(item.result);
+          } else {
+            results.failed.push({ data: item.data, error: item.error });
+          }
+        });
 
-          const result = await prisma.$transaction(async (tx) => {
-            const transaction = await tx.transaction.create({
-              data: {
-                date: txData.date ? new Date(txData.date) : new Date(),
-                transactionCode: txData.transactionCode || '',
-                summary: txData.summary || '',
-                createdBy: txData.createdBy || req.user?.username || 'System',
-                productId: product.id,
-                userId: req.user?.id || null,
-                quantity: Number(txData.quantity),
-                unitPrice: Number(txData.unitPrice) || 0,
-                reason: txData.reason || '',
-                note: txData.note || '',
-                type: txData.type
-              }
-            });
-
-            return transaction;
-          });
-
-          results.success.push(result);
-        } catch (error) {
-          console.error('Error processing transaction:', error);
-          results.failed.push({
-            data: txData,
-            error: error.message
-          });
-        }
+        console.log(`✅ Batch ${Math.floor(i / CONCURRENT_BATCH) + 1} completed`);
       }
 
       res.json({
@@ -505,7 +508,6 @@ class TransactionController {
     }
   }
 
-  // PUT /api/transactions/:id
   async update(req, res) {
     try {
       const { id } = req.params;
@@ -586,7 +588,6 @@ class TransactionController {
     }
   }
 
-  // DELETE /api/transactions/:id
   async delete(req, res) {
     try {
       const { id } = req.params;
@@ -633,7 +634,7 @@ class TransactionController {
     }
   }
 
-  // POST /api/transactions/delete-many
+  // ✅ FIX 3: Limit batch size và optimize delete
   async deleteMany(req, res) {
     try {
       const { ids } = req.body;
@@ -645,27 +646,43 @@ class TransactionController {
         });
       }
 
+      // ✅ Giới hạn để tránh timeout
+      const MAX_DELETE = 100;
+      if (ids.length > MAX_DELETE) {
+        return res.status(400).json({
+          success: false,
+          error: `Chỉ có thể xóa tối đa ${MAX_DELETE} items mỗi lần. Hiện tại: ${ids.length}. Vui lòng chia nhỏ batch.`
+        });
+      }
+
+      console.log(`🗑️ Deleting ${ids.length} transactions`);
+
       const transactions = await prisma.transaction.findMany({
         where: { id: { in: ids.map(id => Number(id)) } },
         include: { product: true }
       });
 
+      // ✅ Delete trong một transaction
       await prisma.$transaction(async (tx) => {
+        // Delete all at once
         await tx.transaction.deleteMany({
           where: { id: { in: ids.map(id => Number(id)) } }
         });
 
-        for (const transaction of transactions) {
-          await tx.historyLog.create({
-            data: {
-              action: 'delete_transaction',
-              productId: transaction.productId,
-              userId: req.user?.id || null,
-              productName: transaction.product.productName,
-              productSku: transaction.product.sku,
-              details: `Xóa giao dịch ${transaction.type} ${transaction.quantity} sản phẩm`
-            }
-          });
+        // Log history (có thể bỏ nếu quá nhiều để tránh timeout)
+        if (transactions.length <= 50) {
+          for (const transaction of transactions) {
+            await tx.historyLog.create({
+              data: {
+                action: 'delete_transaction',
+                productId: transaction.productId,
+                userId: req.user?.id || null,
+                productName: transaction.product.productName,
+                productSku: transaction.product.sku,
+                details: `Xóa giao dịch ${transaction.type} ${transaction.quantity} sản phẩm`
+              }
+            });
+          }
         }
       });
 
@@ -683,7 +700,6 @@ class TransactionController {
     }
   }
 
-  // GET /api/transactions/product/:productId
   async getByProduct(req, res) {
     try {
       const { productId } = req.params;
@@ -731,7 +747,6 @@ class TransactionController {
     }
   }
 
-  // GET /api/transactions/stats
   async getStats(req, res) {
     try {
       const { startDate, endDate, type } = req.query;
@@ -808,7 +823,6 @@ class TransactionController {
     }
   }
 
-  // GET /api/transactions/export
   async exportTransactions(req, res) {
     try {
       const { type, startDate, endDate } = req.query;
@@ -899,7 +913,7 @@ class TransactionController {
     }
   }
 
-  // POST /api/transactions/import-excel
+  // ✅ FIX 4: Import Excel tối ưu cho Vercel với Promise.all
   async importExcel(req, res) {
     try {
       console.log('📥 Import Excel called');
@@ -920,11 +934,36 @@ class TransactionController {
         path: req.file.path
       });
 
+      // ✅ Kiểm tra file tồn tại
+      if (!fs.existsSync(req.file.path)) {
+        return res.status(400).json({
+          success: false,
+          error: 'File không tồn tại trên server. Path: ' + req.file.path
+        });
+      }
+
       const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.readFile(req.file.path);
+      
+      try {
+        await workbook.xlsx.readFile(req.file.path);
+      } catch (readError) {
+        console.error('❌ Error reading Excel file:', readError);
+        // Cleanup
+        if (fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
+        return res.status(400).json({
+          success: false,
+          error: 'Không thể đọc file Excel: ' + readError.message
+        });
+      }
+
       const worksheet = workbook.worksheets[0];
       
       if (!worksheet) {
+        if (fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
         return res.status(400).json({
           success: false,
           error: 'File Excel không có dữ liệu'
@@ -941,6 +980,9 @@ class TransactionController {
       console.log('📋 Header Row:', headerRow);
 
       if (headerRow.length === 0) {
+        if (fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
         return res.status(400).json({
           success: false,
           error: 'File Excel không có header hoặc header trống'
@@ -1011,6 +1053,9 @@ class TransactionController {
       const missingCols = requiredCols.filter(col => !colIndexes[col]);
       
       if (missingCols.length > 0) {
+        if (fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
         return res.status(400).json({
           success: false,
           error: `File Excel thiếu cột bắt buộc: ${missingCols.join(', ')}`
@@ -1030,6 +1075,9 @@ class TransactionController {
       console.log(`📊 Total rows data: ${rows.length}`);
 
       if (rows.length === 0) {
+        if (fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
         return res.status(400).json({
           success: false,
           error: 'File Excel không có dữ liệu (chỉ có header)',
@@ -1067,107 +1115,139 @@ class TransactionController {
         return new Date();
       };
 
-      // Process rows
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
-        
-        try {
-          const dateValue = row[colIndexes.date];
-          const transactionCode = toString(row[colIndexes.transactionCode]);
-          const summary = toString(row[colIndexes.summary]);
-          const createdBy = toString(row[colIndexes.createdBy]) || req.user?.username || 'System';
-          const sku = toString(row[colIndexes.sku]);
-          const productName = toString(row[colIndexes.productName]);
-          const quantity = Number(row[colIndexes.quantity]) || 0;
-          const unitPrice = Number(row[colIndexes.unitPrice]) || 0;
-          const reason = toString(row[colIndexes.reason] || '');
-          const note = toString(row[colIndexes.note] || '');
+      // ✅ CRITICAL FIX: Process rows với batch và Promise.all
+      const BATCH_SIZE = 20; // Tối ưu cho Vercel
+      const batches = [];
+      
+      for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+        batches.push(rows.slice(i, i + BATCH_SIZE));
+      }
 
-          console.log(`Row ${i + 2}: ${productName} | Qty: ${quantity} | Type: ${detectedType}`);
+      console.log(`📦 Processing ${batches.length} batches of ${BATCH_SIZE} items each`);
 
-          // Validation
-          if (!productName) {
-            results.failed.push({
-              row: i + 2,
-              data: { productName, quantity, sku },
-              error: 'Thiếu tên sản phẩm'
-            });
-            continue;
-          }
+      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+        const batch = batches[batchIndex];
+        console.log(`🔄 Processing batch ${batchIndex + 1}/${batches.length}...`);
 
-          if (!quantity || quantity <= 0) {
-            results.failed.push({
-              row: i + 2,
-              data: { productName, quantity, sku },
-              error: 'Số lượng không hợp lệ hoặc bằng 0'
-            });
-            continue;
-          }
-
-          const parsedDate = parseDate(dateValue);
+        // Process batch items in parallel
+        const batchPromises = batch.map(async (row, localIndex) => {
+          const globalIndex = batchIndex * BATCH_SIZE + localIndex;
           
-          // Tìm hoặc tạo product
-          const product = await this.findOrCreateProduct(productName, sku);
+          try {
+            const dateValue = row[colIndexes.date];
+            const transactionCode = toString(row[colIndexes.transactionCode]);
+            const summary = toString(row[colIndexes.summary]);
+            const createdBy = toString(row[colIndexes.createdBy]) || req.user?.username || 'System';
+            const sku = toString(row[colIndexes.sku]);
+            const productName = toString(row[colIndexes.productName]);
+            const quantity = Number(row[colIndexes.quantity]) || 0;
+            const unitPrice = Number(row[colIndexes.unitPrice]) || 0;
+            const reason = toString(row[colIndexes.reason] || '');
+            const note = toString(row[colIndexes.note] || '');
 
-          // Tạo transaction
-          const transaction = await prisma.$transaction(async (tx) => {
-            const newTransaction = await tx.transaction.create({
-              data: {
-                date: parsedDate,
-                transactionCode,
-                summary,
-                createdBy,
-                productId: product.id,
-                userId: req.user?.id || null,
-                quantity,
-                unitPrice,
-                reason,
-                note,
-                type: detectedType
-              }
+            // Validation
+            if (!productName) {
+              return {
+                success: false,
+                row: globalIndex + 2,
+                data: { productName, quantity, sku },
+                error: 'Thiếu tên sản phẩm'
+              };
+            }
+
+            if (!quantity || quantity <= 0) {
+              return {
+                success: false,
+                row: globalIndex + 2,
+                data: { productName, quantity, sku },
+                error: 'Số lượng không hợp lệ hoặc bằng 0'
+              };
+            }
+
+            const parsedDate = parseDate(dateValue);
+            
+            // Tìm hoặc tạo product
+            const product = await this.findOrCreateProduct(productName, sku);
+
+            // Tạo transaction
+            const transaction = await prisma.$transaction(async (tx) => {
+              const newTransaction = await tx.transaction.create({
+                data: {
+                  date: parsedDate,
+                  transactionCode,
+                  summary,
+                  createdBy,
+                  productId: product.id,
+                  userId: req.user?.id || null,
+                  quantity,
+                  unitPrice,
+                  reason,
+                  note,
+                  type: detectedType
+                }
+              });
+
+              // Log history
+              await tx.historyLog.create({
+                data: {
+                  action: `${detectedType}_transaction`,
+                  productId: product.id,
+                  userId: req.user?.id || null,
+                  productName: product.productName,
+                  productSku: product.sku,
+                  details: `Import Excel: ${detectedType === 'import' ? 'Nhập' : 'Xuất'} ${quantity} ${product.productName}. ${note || ''}`
+                }
+              });
+
+              return newTransaction;
             });
 
-            // Log history
-            await tx.historyLog.create({
+            return {
+              success: true,
+              row: globalIndex + 2,
+              transactionId: transaction.id,
+              productName: product.productName,
+              sku: product.sku,
+              quantity,
+              unitPrice,
+              type: detectedType
+            };
+
+          } catch (error) {
+            console.error(`❌ Error at row ${globalIndex + 2}:`, error.message);
+            return {
+              success: false,
+              row: globalIndex + 2,
               data: {
-                action: `${detectedType}_transaction`,
-                productId: product.id,
-                userId: req.user?.id || null,
-                productName: product.productName,
-                productSku: product.sku,
-                details: `Import Excel: ${detectedType === 'import' ? 'Nhập' : 'Xuất'} ${quantity} ${product.productName}. ${note || ''}`
-              }
+                productName: toString(row[colIndexes.productName]),
+                sku: toString(row[colIndexes.sku]),
+                quantity: row[colIndexes.quantity]
+              },
+              error: error.message
+            };
+          }
+        });
+
+        // Wait for batch to complete
+        const batchResults = await Promise.all(batchPromises);
+        
+        // Collect results
+        batchResults.forEach(result => {
+          if (result.success) {
+            results.success.push(result);
+          } else {
+            results.failed.push({
+              row: result.row,
+              data: result.data,
+              error: result.error
             });
+          }
+        });
 
-            return newTransaction;
-          });
-
-          results.success.push({
-            row: i + 2,
-            transactionId: transaction.id,
-            productName: product.productName,
-            sku: product.sku,
-            quantity,
-            unitPrice,
-            type: detectedType
-          });
-
-        } catch (error) {
-          console.error(`❌ Error at row ${i + 2}:`, error.message);
-          results.failed.push({
-            row: i + 2,
-            data: {
-              productName: toString(row[colIndexes.productName]),
-              sku: toString(row[colIndexes.sku]),
-              quantity: row[colIndexes.quantity]
-            },
-            error: error.message
-          });
-        }
+        console.log(`✅ Batch ${batchIndex + 1} completed`);
       }
 
       // Cleanup uploaded file
-      const fs = await import('fs');
       if (fs.existsSync(req.file.path)) {
         fs.unlinkSync(req.file.path);
         console.log('🗑️ Cleaned up temp file');
@@ -1185,7 +1265,11 @@ class TransactionController {
           failedItems: results.failed.slice(0, 10),
           detectedType,
           totalRows: rows.length,
-          columnMapping: colIndexes
+          columnMapping: colIndexes,
+          batchInfo: {
+            totalBatches: batches.length,
+            batchSize: BATCH_SIZE
+          }
         }
       });
 
@@ -1194,17 +1278,14 @@ class TransactionController {
       console.error('Stack trace:', error.stack);
       
       // Cleanup file on error
-      if (req.file) {
-        const fs = await import('fs');
-        if (fs.existsSync(req.file.path)) {
-          fs.unlinkSync(req.file.path);
-        }
+      if (req.file && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
       }
 
       res.status(500).json({
         success: false,
         error: 'Lỗi khi import Excel: ' + error.message,
-        details: error.stack
+        details: process.env.NODE_ENV === 'development' ? error.stack : undefined
       });
     }
   }
