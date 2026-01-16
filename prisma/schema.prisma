@@ -75,16 +75,19 @@ model Transaction {
   id              Int      @id @default(autoincrement())
   productId       Int
   userId          Int?
-  type            String
+  type            String   // IN | OUT | ADJUST
+  warehouseId     Int      @default(1) // ID kho (default = kho chính)
   transactionCode String   @default("")
   summary         String   @default("")
   createdBy       String   @default("")
-  quantity        Int
+  quantity        Int      // Giá trị + hoặc - (do type quyết định)
   unitPrice       Float    @default(0)
-  reason          String   @default("")
+  source          String   @default("manual") // import_excel | manual | system
+  reason          String   @default("") // LÝ DO XUẤT, damaged, lost, adjust
   note            String   @default("")
   date            DateTime @default(now())
   createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
   user    User?   @relation(fields: [userId], references: [id])
@@ -92,6 +95,8 @@ model Transaction {
   @@index([productId])
   @@index([type])
   @@index([date])
+  @@index([warehouseId])
+  @@index([source])
   @@index([transactionCode])
   @@map("Transaction")
 }

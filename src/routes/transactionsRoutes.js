@@ -54,6 +54,10 @@ router.post('/batch',
   (req, res) => TransactionController.createBatch(req, res)
 );
 
+router.post('/adjust', 
+  (req, res) => TransactionController.createAdjustment(req, res)
+);
+
 router.post('/delete-many', 
   (req, res) => TransactionController.deleteMany(req, res)
 );
