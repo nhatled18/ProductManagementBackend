@@ -517,6 +517,9 @@ class InventoryController {
         cost,
         initialStock,
         displayStock,
+        damaged,      // ✅ Thêm damaged
+        stockIn,      // ✅ Thêm stockIn
+        stockOut,     // ✅ Thêm stockOut
         note
       } = req.body;
 
@@ -545,17 +548,17 @@ class InventoryController {
       if (cost !== undefined) updateData.cost = Number(cost);
       if (initialStock !== undefined) updateData.initialStock = Number(initialStock);
       if (displayStock !== undefined) updateData.displayStock = Number(displayStock);
+      if (damaged !== undefined) updateData.damaged = Number(damaged);   // ✅ Lưu damaged
+      if (stockIn !== undefined) updateData.stockIn = Number(stockIn);   // ✅ Lưu stockIn
+      if (stockOut !== undefined) updateData.stockOut = Number(stockOut); // ✅ Lưu stockOut
       if (note !== undefined) updateData.note = note?.trim() || '';
 
-      // Recalculate ending stock if initialStock changed
-      if (initialStock !== undefined) {
-        const newInitial = Number(initialStock);
-        const stockIn = oldInventory.stockIn;
-        const stockOut = oldInventory.stockOut;
-        const damaged = oldInventory.damaged;
-        
-        updateData.endingStock = newInitial + stockIn - stockOut - damaged;
-      }
+      // ✅ Recalculate ending stock dùng giá trị mới (ưu tiên từ request, fallback về DB)
+      const newInitial  = initialStock !== undefined ? Number(initialStock) : oldInventory.initialStock;
+      const newStockIn  = stockIn      !== undefined ? Number(stockIn)      : oldInventory.stockIn;
+      const newStockOut = stockOut     !== undefined ? Number(stockOut)     : oldInventory.stockOut;
+      const newDamaged  = damaged      !== undefined ? Number(damaged)      : oldInventory.damaged;
+      updateData.endingStock = newInitial + newStockIn - newStockOut - newDamaged;
 
       // Update inventory
       const inventory = await prisma.inventory.update({
