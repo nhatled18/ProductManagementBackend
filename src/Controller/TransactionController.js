@@ -730,6 +730,22 @@ class TransactionController {
       });
 
       // ✅ CẬP NHẬT INVENTORY
+      // Nếu lý do là 'damaged' → cộng thêm vào trường damaged của inventory
+      if (reason === 'damaged') {
+        const inventory = await prisma.inventory.findFirst({
+          where: { productId: product.id }
+        });
+
+        if (inventory) {
+          await prisma.inventory.update({
+            where: { id: inventory.id },
+            data: {
+              damaged: inventory.damaged + requestedQty
+            }
+          });
+        }
+      }
+
       await updateInventoryStock(product.id);
 
       res.status(201).json({

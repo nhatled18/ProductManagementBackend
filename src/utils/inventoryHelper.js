@@ -89,13 +89,17 @@ export async function updateInventoryStock(productId) {
     }
 
     // 5. Tính toán endingStock
-    const endingStock = inventory.initialStock + totalImport + totalExport + totalAdjust;
+    // ⚠️ export transaction được lưu là số ÂM trong DB
+    // ⚠️ damaged được lưu riêng trong inventory, KHÔNG phải transaction
+    const damaged = inventory.damaged || 0;
+    const endingStock = inventory.initialStock + totalImport + totalExport + totalAdjust - damaged;
 
     console.log(`\n📐 CÔNG THỨC TÍNH:`);
     console.log(`   initialStock: ${inventory.initialStock}`);
     console.log(`   + totalImport: ${totalImport}`);
-    console.log(`   + totalExport: ${totalExport} (âm)`);
-    console.log(`   + totalAdjust: ${totalAdjust} (âm)`);
+    console.log(`   + totalExport: ${totalExport} (số âm = trừ ra)`);
+    console.log(`   + totalAdjust: ${totalAdjust}`);
+    console.log(`   - damaged: ${damaged}`);
     console.log(`   = endingStock: ${endingStock}`);
 
     // ✅ 6. NẾU không còn transactions VÀ stock = 0 → XÓA inventory
@@ -117,8 +121,9 @@ export async function updateInventoryStock(productId) {
       where: { id: inventory.id },
       data: {
         stockIn: totalImport,
-        stockOut: Math.abs(totalExport),
+        stockOut: Math.abs(totalExport), // lưu dương để hiển thị
         endingStock: endingStock,
+        // ✅ Giữ nguyên damaged - không bị sync ghi đè
         retailPrice: product.retailPrice || inventory.retailPrice || 0,
         cost: product.cost || inventory.cost || 0,
         stockType1: product.stockType1 || inventory.stockType1 || '',
