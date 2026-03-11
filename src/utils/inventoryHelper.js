@@ -33,6 +33,7 @@ export async function updateInventoryStock(productId) {
         id: true,
         type: true,
         quantity: true,
+        reason: true,   // ✅ Cần reason để tính damaged
         date: true
       },
       orderBy: { date: 'asc' }
@@ -44,17 +45,22 @@ export async function updateInventoryStock(productId) {
     let totalImport = 0;
     let totalExport = 0;
     let totalAdjust = 0;
+    let totalDamaged = 0; // Chỉ để HIỂN THỊ cột HỎNG/LỖI
 
     allTransactions.forEach((tx, index) => {
       if (tx.type === 'import') {
         totalImport += tx.quantity;
         console.log(`   [${index + 1}] IMPORT: +${tx.quantity} (total: ${totalImport})`);
       } else if (tx.type === 'export') {
-        totalExport += tx.quantity;
+        totalExport += tx.quantity; // âm
         console.log(`   [${index + 1}] EXPORT: ${tx.quantity} (total: ${totalExport})`);
       } else if (tx.type === 'adjust') {
-        totalAdjust += tx.quantity;
+        totalAdjust += tx.quantity; // âm (bao gồm cả damaged/lost)
         console.log(`   [${index + 1}] ADJUST: ${tx.quantity} (total: ${totalAdjust})`);
+        // Nếu lý do là 'damaged' → cộng vào tổng hiển thị Hỏng/Lỗi
+        if (tx.reason === 'damaged') {
+          totalDamaged += Math.abs(tx.quantity);
+        }
       }
     });
 
@@ -89,18 +95,17 @@ export async function updateInventoryStock(productId) {
     }
 
     // 5. Tính toán endingStock
-    // ⚠️ export transaction được lưu là số ÂM trong DB
-    // ⚠️ damaged được lưu riêng trong inventory, KHÔNG phải transaction
-    const damaged = inventory.damaged || 0;
-    const endingStock = inventory.initialStock + totalImport + totalExport + totalAdjust - damaged;
+    // ✅ Công thức: Đầu + Tổng nhập - Tổng xuất + Tổng adjust(âm)
+    // ⚠️ KHÔNG trừ damaged riêng - vì damaged ĐÃ được tính trong totalAdjust (âm)
+    const endingStock = inventory.initialStock + totalImport - totalExport + totalAdjust;
 
     console.log(`\n📐 CÔNG THỨC TÍNH:`);
-    console.log(`   initialStock: ${inventory.initialStock}`);
-    console.log(`   + totalImport: ${totalImport}`);
-    console.log(`   + totalExport: ${totalExport} (số âm = trừ ra)`);
-    console.log(`   + totalAdjust: ${totalAdjust}`);
-    console.log(`   - damaged: ${damaged}`);
-    console.log(`   = endingStock: ${endingStock}`);
+    console.log(`   Tồn đầu (initialStock): ${inventory.initialStock}`);
+    console.log(`   + Tổng nhập (totalImport): +${totalImport}`);
+    console.log(`   - Tổng xuất (totalExport): -${totalExport}`);
+    console.log(`   + Điều chỉnh (totalAdjust, âm): ${totalAdjust}`);
+    console.log(`   = Tồn cuối (endingStock): ${endingStock}`);
+    console.log(`   [Hiển thị] Hỏng/Lỗi (totalDamaged): ${totalDamaged}`);
 
     // ✅ 6. NẾU không còn transactions VÀ stock = 0 → XÓA inventory
     if (allTransactions.length === 0 && endingStock === 0 && inventory.initialStock === 0) {
@@ -122,8 +127,8 @@ export async function updateInventoryStock(productId) {
       data: {
         stockIn: totalImport,
         stockOut: Math.abs(totalExport), // lưu dương để hiển thị
+        damaged: totalDamaged,           // ✅ Tự tính từ transactions (hiển thị)
         endingStock: endingStock,
-        // ✅ Giữ nguyên damaged - không bị sync ghi đè
         retailPrice: product.retailPrice || inventory.retailPrice || 0,
         cost: product.cost || inventory.cost || 0,
         stockType1: product.stockType1 || inventory.stockType1 || '',
@@ -314,7 +319,7 @@ export async function calculateInventoryStock(productId) {
       }
     });
 
-    const endingStock = inventory.initialStock + totalImport + totalExport + totalAdjust;
+    const endingStock = inventory.initialStock + totalImport - totalExport + totalAdjust;
 
     return {
       productId,
